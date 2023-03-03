@@ -26,13 +26,15 @@ if [ -z $TITAN ]; then
 fi
 
 if [ -z $DB_DIR ]; then
-  echo "DB_DIR is not defined"
-  exit 0
+#  echo "DB_DIR is not defined"
+#  exit 0
+  DB_DIR="db"
 fi
 
 if [ -z $WAL_DIR ]; then
-  echo "WAL_DIR is not defined"
-  exit 0
+#  echo "WAL_DIR is not defined"
+#  exit 0
+  WAL_DIR="db"
 fi
 
 output_dir=${OUTPUT_DIR:-/tmp/}
@@ -46,7 +48,8 @@ mb_written_per_sec=${MB_WRITE_PER_SEC:-0}
 num_nexts_per_seek=${NUM_NEXTS_PER_SEEK:-100}
 cache_size=${CACHE_SIZE:-$((1 * G))}
 compression_max_dict_bytes=${COMPRESSION_MAX_DICT_BYTES:-0}
-compression_type=${COMPRESSION_TYPE:-snappy}
+#compression_type=${COMPRESSION_TYPE:-snappy}
+compression_type="none"
 duration=${DURATION:-0}
 
 num_keys=${NUM_KEYS:-$((1 * G))}
