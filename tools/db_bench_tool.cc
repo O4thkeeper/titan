@@ -78,6 +78,7 @@
 #include "utilities/persistent_cache/block_cache_tier.h"
 
 #include "titan/db.h"
+#include "titan/statistics.h"
 
 using GFLAGS_NAMESPACE::ParseCommandLineFlags;
 using GFLAGS_NAMESPACE::RegisterFlagValidator;
@@ -3065,7 +3066,65 @@ class Benchmark {
 #endif  // ROCKSDB_LITE
 
     if (FLAGS_statistics) {
-      fprintf(stdout, "STATISTICS:\n%s\n", dbstats->ToString().c_str());
+//      fprintf(stdout, "STATISTICS:\n%s\n", dbstats->ToString().c_str());
+        {
+            std::string res;
+            res.reserve(20000);
+            for (const auto& t : TickersNameMap) {
+                assert(t.first < TICKER_ENUM_MAX);
+                char buffer[kTmpStrBufferSize];
+                snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
+                         t.second.c_str(), dbstats->getTickerCount(t.first));
+                res.append(buffer);
+            }
+            for (const auto& t : titandb::TitanTickersNameMap) {
+                assert(t.first < titandb::TITAN_TICKER_ENUM_MAX);
+                char buffer[kTmpStrBufferSize];
+                snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
+                         t.second.c_str(), dbstats->getTickerCount(t.first));
+                res.append(buffer);
+            }
+            for (const auto& h : HistogramsNameMap) {
+                assert(h.first < HISTOGRAM_ENUM_MAX);
+                char buffer[kTmpStrBufferSize];
+                HistogramData hData;
+                dbstats->histogramData(h.first, &hData);
+                // don't handle failures - buffer should always be big enough and arguments
+                // should be provided correctly
+                int ret =
+                        snprintf(buffer, kTmpStrBufferSize,
+                                 "%s P50 : %f P95 : %f P99 : %f P100 : %f COUNT : %" PRIu64
+                                 " SUM : %" PRIu64 "\n",
+                                 h.second.c_str(), hData.median, hData.percentile95,
+                                 hData.percentile99, hData.max, hData.count, hData.sum);
+                if (ret < 0 || ret >= kTmpStrBufferSize) {
+                    assert(false);
+                    continue;
+                }
+                res.append(buffer);
+            }
+            for (const auto& h : titandb::TitanHistogramsNameMap) {
+                assert(h.first < titandb::TITAN_HISTOGRAM_ENUM_MAX);
+                char buffer[kTmpStrBufferSize];
+                HistogramData hData;
+                dbstats->histogramData(h.first, &hData);
+                // don't handle failures - buffer should always be big enough and arguments
+                // should be provided correctly
+                int ret =
+                        snprintf(buffer, kTmpStrBufferSize,
+                                 "%s P50 : %f P95 : %f P99 : %f P100 : %f COUNT : %" PRIu64
+                                 " SUM : %" PRIu64 "\n",
+                                 h.second.c_str(), hData.median, hData.percentile95,
+                                 hData.percentile99, hData.max, hData.count, hData.sum);
+                if (ret < 0 || ret >= kTmpStrBufferSize) {
+                    assert(false);
+                    continue;
+                }
+                res.append(buffer);
+            }
+            res.shrink_to_fit();
+            fprintf(stdout, "STATISTICS:\n%s\n", res.c_str());
+        }
     }
     if (FLAGS_simcache_size >= 0) {
       fprintf(stdout, "SIMULATOR CACHE STATISTICS:\n%s\n",
@@ -6408,7 +6467,8 @@ int db_bench_tool(int argc, char** argv) {
   }
 #endif  // ROCKSDB_LITE
   if (FLAGS_statistics) {
-    dbstats = rocksdb::CreateDBStatistics();
+//    dbstats = rocksdb::CreateDBStatistics();
+    dbstats= rocksdb::titandb::CreateDBStatistics();
   }
   if (dbstats) {
     dbstats->set_stats_level(static_cast<StatsLevel>(FLAGS_stats_level));

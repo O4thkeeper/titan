@@ -12,3 +12,4 @@ Makefile
 .idea/
 .vscode/
 cmake-build-debug/
+cmake-build-debug-remote/

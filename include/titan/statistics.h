@@ -65,25 +65,34 @@ const std::vector<std::pair<TickerType, std::string>> TitanTickersNameMap = {
     {TITAN_NUM_SEEK, "titandb.num.seek"},
     {TITAN_NUM_NEXT, "titandb.num.next"},
     {TITAN_NUM_PREV, "titandb.num.prev"},
+
     {TITAN_BLOB_FILE_NUM_KEYS_WRITTEN, "titandb.blob.file.num.keys.written"},
     {TITAN_BLOB_FILE_NUM_KEYS_READ, "titandb.blob.file.num.keys.read"},
     {TITAN_BLOB_FILE_BYTES_WRITTEN, "titandb.blob.file.bytes.written"},
     {TITAN_BLOB_FILE_BYTES_READ, "titandb.blob.file.bytes.read"},
     {TITAN_BLOB_FILE_SYNCED, "titandb.blob.file.synced"},
+
     {TITAN_GC_NUM_FILES, "titandb.gc.num.files"},
     {TITAN_GC_NUM_NEW_FILES, "titandb.gc.num.new.files"},
+
     {TITAN_GC_NUM_KEYS_OVERWRITTEN, "titandb.gc.num.keys.overwritten"},
     {TITAN_GC_NUM_KEYS_RELOCATED, "titandb.gc.num.keys.relocated"},
     {TITAN_GC_NUM_KEYS_FALLBACK, "titandb.gc.num.keys.fallback"},
     {TITAN_GC_BYTES_OVERWRITTEN, "titandb.gc.bytes.overwritten"},
     {TITAN_GC_BYTES_RELOCATED, "titandb.gc.bytes.relocated"},
     {TITAN_GC_BYTES_FALLBACK, "titandb.gc.bytes.fallback"},
+
     {TITAN_GC_BYTES_WRITTEN, "titandb.gc.bytes.written"},
     {TITAN_GC_BYTES_READ, "titandb.gc.bytes.read"},
+
     {TITAN_BLOB_CACHE_HIT, "titandb.blob.cache.hit"},
     {TITAN_BLOB_CACHE_MISS, "titandb.blob.cache.miss"},
+
     {TITAN_GC_DISCARDABLE, "titandb.gc.discardable"},
     {TITAN_GC_SMALL_FILE, "titandb.gc.small.file"},
+    {TITAN_GC_LEVEL_MERGE_MARK, "titandb.gc.level.merge.mark"},
+    {TITAN_GC_LEVEL_MERGE_DELETE, "titandb.gc.level.merge.delete"},
+
     {TITAN_GC_NO_NEED, "titandb.gc.no.need"},
     {TITAN_GC_REMAIN, "titandb.gc.remain"},
     {TITAN_GC_FAILURE, "titandb.gc.failure"},
