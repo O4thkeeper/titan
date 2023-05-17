@@ -1,15 +1,14 @@
 #pragma once
 
+#include "blob_file_manager.h"
+#include "blob_file_set.h"
 #include "db/db_impl/db_impl.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/threadpool.h"
-#include "util/repeatable_thread.h"
-
-#include "blob_file_manager.h"
-#include "blob_file_set.h"
 #include "table_factory.h"
 #include "titan/db.h"
 #include "titan_stats.h"
+#include "util/repeatable_thread.h"
 
 namespace rocksdb {
 namespace titandb {
@@ -159,6 +158,17 @@ class TitanDBImpl : public TitanDB {
   void OnCompactionCompleted(const CompactionJobInfo& compaction_job_info);
 
   void StartBackgroundTasks();
+
+  void GetGCTimeStats(
+      std::vector<std::vector<uint64_t>>* result) const override {
+    MutexLock l(&mutex_);
+    result->assign(gc_time_stat_list_.begin(), gc_time_stat_list_.end());
+  }
+
+  //  void GetCompactionTimeList(
+  //      std::vector<std::pair<uint64_t, uint64_t>>* vector) const override;
+
+  void WaitBackgroundJob() override;
 
   void TEST_set_initialized(bool _initialized) { initialized_ = _initialized; }
 
@@ -342,6 +352,12 @@ class TitanDBImpl : public TitanDB {
   int disable_titandb_file_deletions_ = 0;
 
   std::atomic_bool shuting_down_{false};
+
+  // Store time split of every gc triggered.
+  std::vector<std::vector<uint64_t>> gc_time_stat_list_;
+
+  // Store start and end time of every compaction triggered.
+  std::vector<std::pair<uint64_t, uint64_t>> compaction_time_list_;
 };
 
 }  // namespace titandb

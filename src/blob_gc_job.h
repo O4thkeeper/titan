@@ -1,14 +1,13 @@
 #pragma once
 
-#include "db/db_impl/db_impl.h"
-#include "rocksdb/statistics.h"
-#include "rocksdb/status.h"
-
 #include "blob_file_builder.h"
 #include "blob_file_iterator.h"
 #include "blob_file_manager.h"
 #include "blob_file_set.h"
 #include "blob_gc.h"
+#include "db/db_impl/db_impl.h"
+#include "rocksdb/statistics.h"
+#include "rocksdb/status.h"
 #include "titan/options.h"
 #include "titan_stats.h"
 #include "version_edit.h"
@@ -37,8 +36,11 @@ class BlobGCJob {
   // REQUIRE: mutex held
   Status Finish();
 
+  void get_gc_metrics(std::vector<uint64_t> *) const;
+
  private:
   class GarbageCollectionWriteCallback;
+  class BlobFileMergeIteratorWithReadStats;
   friend class BlobGCJobTest;
 
   void UpdateInternalOpStats();
@@ -77,6 +79,11 @@ class BlobGCJob {
     uint64_t gc_num_files = 0;
     uint64_t gc_read_lsm_micros = 0;
     uint64_t gc_update_lsm_micros = 0;
+    uint64_t gc_read_blob_micros = 0;
+    uint64_t gc_write_blob_micros = 0;
+    uint64_t gc_num_read_lsm = 0;
+    uint64_t gc_num_read_blob = 0;
+    uint64_t gc_num_write_back = 0;
   } metrics_;
 
   uint64_t prev_bytes_read_ = 0;

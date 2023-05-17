@@ -4,7 +4,6 @@
 #include "blob_gc_job.h"
 
 #include <cinttypes>
-
 #include <memory>
 
 #include "titan_logging.h"
@@ -82,6 +81,39 @@ class BlobGCJob::GarbageCollectionWriteCallback : public WriteCallback {
   uint64_t read_bytes_;
 };
 
+class BlobGCJob::BlobFileMergeIteratorWithReadStats {
+ public:
+  BlobFileMergeIteratorWithReadStats(
+      std::unique_ptr<BlobFileMergeIterator> gc_iter, Env* env,
+      uint64_t& read_blob_micros, uint64_t& read_key_num)
+      : gc_iter_(std::move(gc_iter)),
+        env_(env),
+        read_blob_micros_(read_blob_micros),
+        read_key_num_(read_key_num) {}
+
+  bool Valid() const { return gc_iter_->Valid(); }
+  void SeekToFirst() {
+    TitanStopWatch sw(env_, read_blob_micros_);
+    read_key_num_++;
+    gc_iter_->SeekToFirst();
+  }
+  void Next() {
+    TitanStopWatch sw(env_, read_blob_micros_);
+    read_key_num_++;
+    gc_iter_->Next();
+  }
+  Slice key() const { return gc_iter_->key(); }
+  Slice value() const { return gc_iter_->value(); }
+  Status status() const { return gc_iter_->status(); }
+  BlobIndex GetBlobIndex() { return gc_iter_->GetBlobIndex(); }
+
+ private:
+  std::unique_ptr<BlobFileMergeIterator> gc_iter_;
+  Env* env_;
+  uint64_t& read_blob_micros_;
+  uint64_t& read_key_num_;
+};
+
 BlobGCJob::BlobGCJob(BlobGC* blob_gc, DB* db, port::Mutex* mutex,
                      const TitanDBOptions& titan_db_options, Env* env,
                      const EnvOptions& env_options,
@@ -149,10 +181,18 @@ Status BlobGCJob::Run() {
 Status BlobGCJob::DoRunGC() {
   Status s;
 
-  std::unique_ptr<BlobFileMergeIterator> gc_iter;
-  s = BuildIterator(&gc_iter);
+  std::unique_ptr<BlobFileMergeIterator> gc_iter_inner;
+  {
+    TitanStopWatch sw(env_, metrics_.gc_read_blob_micros);
+    s = BuildIterator(&gc_iter_inner);
+  }
   if (!s.ok()) return s;
-  if (!gc_iter) return Status::Aborted("Build iterator for gc failed");
+  if (!gc_iter_inner) return Status::Aborted("Build iterator for gc failed");
+
+  auto gc_iter = std::unique_ptr<BlobFileMergeIteratorWithReadStats>(
+      new BlobFileMergeIteratorWithReadStats(std::move(gc_iter_inner), env_,
+                                             metrics_.gc_read_blob_micros,
+                                             metrics_.gc_num_read_blob));
 
   // Similar to OptimisticTransaction, we obtain latest_seq from
   // base DB, which is guaranteed to be no smaller than the sequence of
@@ -227,6 +267,7 @@ Status BlobGCJob::DoRunGC() {
     }
 
     // Rewrite entry to new blob file
+    TitanStopWatch w(env_, metrics_.gc_write_blob_micros);
     if ((!blob_file_handle && !blob_file_builder) ||
         file_size >= blob_gc_->titan_cf_options().blob_file_target_size) {
       if (file_size >= blob_gc_->titan_cf_options().blob_file_target_size) {
@@ -365,6 +406,7 @@ Status BlobGCJob::DiscardEntry(const Slice& key, const BlobIndex& blob_index,
   }
   // count read bytes for checking LSM entry
   metrics_.gc_bytes_read += key.size() + index_entry.size();
+  metrics_.gc_num_read_lsm++;
   if (s.IsNotFound() || !is_blob_index) {
     // Either the key is deleted or updated with a newer version which is
     // inlined in LSM.
@@ -421,6 +463,7 @@ Status BlobGCJob::Finish() {
 }
 
 Status BlobGCJob::InstallOutputBlobFiles() {
+  TitanStopWatch w(env_, metrics_.gc_write_blob_micros);
   Status s;
   std::vector<
       std::pair<std::shared_ptr<BlobFileMeta>, std::unique_ptr<BlobFileHandle>>>
@@ -509,6 +552,7 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
       break;
     }
     s = db_impl->WriteWithCallback(wo, &write_batch.first, &write_batch.second);
+    metrics_.gc_num_write_back++;
     const auto& new_blob_index = write_batch.second.new_blob_index();
     if (s.ok()) {
       if (new_blob_index.blob_handle.size > 0) {
@@ -634,6 +678,16 @@ void BlobGCJob::UpdateInternalOpStats() {
            metrics_.gc_read_lsm_micros);
   AddStats(internal_op_stats, InternalOpStatsType::GC_UPDATE_LSM_MICROS,
            metrics_.gc_update_lsm_micros);
+}
+
+void BlobGCJob::get_gc_metrics(std::vector<uint64_t>* result) const {
+  result->push_back(metrics_.gc_read_lsm_micros);
+  result->push_back(metrics_.gc_update_lsm_micros);
+  result->push_back(metrics_.gc_read_blob_micros);
+  result->push_back(metrics_.gc_write_blob_micros);
+  result->push_back(metrics_.gc_num_read_lsm);
+  result->push_back(metrics_.gc_num_read_blob);
+  result->push_back(metrics_.gc_num_write_back);
 }
 
 }  // namespace titandb

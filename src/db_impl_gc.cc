@@ -1,10 +1,9 @@
-#include "test_util/sync_point.h"
-
 #include "blob_file_iterator.h"
 #include "blob_file_size_collector.h"
 #include "blob_gc_job.h"
 #include "blob_gc_picker.h"
 #include "db_impl.h"
+#include "test_util/sync_point.h"
 #include "titan_logging.h"
 #include "util.h"
 
@@ -228,6 +227,15 @@ Status TitanDBImpl::BackgroundGC(LogBuffer* log_buffer,
 
     if (s.ok()) {
       RecordTick(statistics(stats_.get()), TITAN_GC_SUCCESS, 1);
+      // store gc time stats for bench test
+      std::vector<uint64_t> gc_time_stats;
+      uint64_t gc_start_time = gc_sw.start_time();
+      uint64_t gc_end_time = env_->GetSystemClock()->NowMicros();
+      gc_time_stats.push_back(gc_start_time);
+      gc_time_stats.push_back(gc_end_time);
+      blob_gc_job.get_gc_metrics(&gc_time_stats);
+      gc_time_stat_list_.push_back(gc_time_stats);
+
       // Done
     } else {
       SetBGError(s);

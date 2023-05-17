@@ -1,7 +1,6 @@
 #pragma once
 
 #include "rocksdb/utilities/stackable_db.h"
-
 #include "titan/options.h"
 
 namespace rocksdb {
@@ -214,6 +213,13 @@ class TitanDB : public StackableDB {
   bool GetIntProperty(const Slice& property, uint64_t* value) override {
     return GetIntProperty(DefaultColumnFamily(), property, value);
   }
+
+  virtual void GetGCTimeStats(std::vector<std::vector<uint64_t>>*) const = 0;
+
+//  virtual void GetCompactionTimeList(
+//      std::vector<std::pair<uint64_t, uint64_t>>*) const = 0;
+
+  virtual void WaitBackgroundJob() = 0;
 };
 
 }  // namespace titandb
