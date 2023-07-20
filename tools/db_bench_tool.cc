@@ -36,6 +36,7 @@
 #include "db/db_impl/db_impl.h"
 #include "db/malloc_stats.h"
 #include "db/version_set.h"
+#include "db_impl.h"
 #include "hdfs/env_hdfs.h"
 #include "monitoring/histogram.h"
 #include "monitoring/statistics.h"
@@ -63,6 +64,8 @@
 #include "rocksdb/write_batch.h"
 #include "test_util/testutil.h"
 #include "test_util/transaction_test_util.h"
+#include "titan/db.h"
+#include "titan/statistics.h"
 #include "util/cast_util.h"
 #include "util/compression.h"
 #include "util/crc32c.h"
@@ -76,9 +79,6 @@
 #include "utilities/merge_operators.h"
 #include "utilities/merge_operators/bytesxor.h"
 #include "utilities/persistent_cache/block_cache_tier.h"
-
-#include "titan/db.h"
-#include "titan/statistics.h"
 
 using GFLAGS_NAMESPACE::ParseCommandLineFlags;
 using GFLAGS_NAMESPACE::RegisterFlagValidator;
@@ -784,6 +784,22 @@ DEFINE_uint64(blob_db_bytes_per_sync, 0, "Bytes to sync blob file at.");
 
 DEFINE_uint64(blob_db_file_size, 256 * 1024 * 1024,
               "Target size of each blob file.");
+
+DEFINE_bool(save_keys, false, "Save random loaded keys.");
+
+DEFINE_string(path_save_keys, "", "Save path of keys.");
+
+DEFINE_bool(use_local_keys, false, "Use local keys to update.");
+
+DEFINE_double(
+    blob_file_discardable_ratio, 0.5,
+    "The ratio of how much discardable size of a blob file can be GC.");
+
+DEFINE_uint64(max_gc_batch_size, 1 << 30, "Max batch size for GC.");
+
+DEFINE_uint64(min_gc_batch_size, 128 << 20, "Min batch size for GC.");
+
+DEFINE_string(gc_time_list_path, "", "Save path of gc time.");
 
 // Secondary DB instance Options
 DEFINE_bool(use_secondary_db, false,
@@ -2755,7 +2771,7 @@ class Benchmark {
           method = &Benchmark::WriteUniqueRandomDeterministic;
         }
       } else if (name == "fillseq") {
-        fresh_db = true;
+        fresh_db = false;
         method = &Benchmark::WriteSeq;
       } else if (name == "fillbatch") {
         fresh_db = true;
@@ -2765,7 +2781,7 @@ class Benchmark {
         fresh_db = true;
         method = &Benchmark::WriteRandom;
       } else if (name == "filluniquerandom") {
-        fresh_db = true;
+        fresh_db = false;
         if (num_threads > 1) {
           fprintf(stderr,
                   "filluniquerandom multithreaded not supported"
@@ -3065,67 +3081,86 @@ class Benchmark {
     }
 #endif  // ROCKSDB_LITE
 
+    reinterpret_cast<titandb::TitanDB*>(db_.db)->WaitBackgroundJob();
+
     if (FLAGS_statistics) {
-//      fprintf(stdout, "STATISTICS:\n%s\n", dbstats->ToString().c_str());
-        {
-            std::string res;
-            res.reserve(20000);
-            for (const auto& t : TickersNameMap) {
-                assert(t.first < TICKER_ENUM_MAX);
-                char buffer[kTmpStrBufferSize];
-                snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
-                         t.second.c_str(), dbstats->getTickerCount(t.first));
-                res.append(buffer);
-            }
-            for (const auto& t : titandb::TitanTickersNameMap) {
-                assert(t.first < titandb::TITAN_TICKER_ENUM_MAX);
-                char buffer[kTmpStrBufferSize];
-                snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
-                         t.second.c_str(), dbstats->getTickerCount(t.first));
-                res.append(buffer);
-            }
-            for (const auto& h : HistogramsNameMap) {
-                assert(h.first < HISTOGRAM_ENUM_MAX);
-                char buffer[kTmpStrBufferSize];
-                HistogramData hData;
-                dbstats->histogramData(h.first, &hData);
-                // don't handle failures - buffer should always be big enough and arguments
-                // should be provided correctly
-                int ret =
-                        snprintf(buffer, kTmpStrBufferSize,
-                                 "%s P50 : %f P95 : %f P99 : %f P100 : %f COUNT : %" PRIu64
-                                 " SUM : %" PRIu64 "\n",
-                                 h.second.c_str(), hData.median, hData.percentile95,
-                                 hData.percentile99, hData.max, hData.count, hData.sum);
-                if (ret < 0 || ret >= kTmpStrBufferSize) {
-                    assert(false);
-                    continue;
-                }
-                res.append(buffer);
-            }
-            for (const auto& h : titandb::TitanHistogramsNameMap) {
-                assert(h.first < titandb::TITAN_HISTOGRAM_ENUM_MAX);
-                char buffer[kTmpStrBufferSize];
-                HistogramData hData;
-                dbstats->histogramData(h.first, &hData);
-                // don't handle failures - buffer should always be big enough and arguments
-                // should be provided correctly
-                int ret =
-                        snprintf(buffer, kTmpStrBufferSize,
-                                 "%s P50 : %f P95 : %f P99 : %f P100 : %f COUNT : %" PRIu64
-                                 " SUM : %" PRIu64 "\n",
-                                 h.second.c_str(), hData.median, hData.percentile95,
-                                 hData.percentile99, hData.max, hData.count, hData.sum);
-                if (ret < 0 || ret >= kTmpStrBufferSize) {
-                    assert(false);
-                    continue;
-                }
-                res.append(buffer);
-            }
-            res.shrink_to_fit();
-            fprintf(stdout, "STATISTICS:\n%s\n", res.c_str());
+      //      fprintf(stdout, "STATISTICS:\n%s\n", dbstats->ToString().c_str());
+      std::string res;
+      res.reserve(20000);
+      for (const auto& t : TickersNameMap) {
+        assert(t.first < TICKER_ENUM_MAX);
+        char buffer[kTmpStrBufferSize];
+        snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
+                 t.second.c_str(), dbstats->getTickerCount(t.first));
+        res.append(buffer);
+      }
+      for (const auto& t : titandb::TitanTickersNameMap) {
+        assert(t.first < titandb::TITAN_TICKER_ENUM_MAX);
+        char buffer[kTmpStrBufferSize];
+        snprintf(buffer, kTmpStrBufferSize, "%s COUNT : %" PRIu64 "\n",
+                 t.second.c_str(), dbstats->getTickerCount(t.first));
+        res.append(buffer);
+      }
+      for (const auto& h : HistogramsNameMap) {
+        assert(h.first < HISTOGRAM_ENUM_MAX);
+        char buffer[kTmpStrBufferSize];
+        HistogramData hData;
+        dbstats->histogramData(h.first, &hData);
+        // don't handle failures - buffer should always be big enough and
+        // arguments should be provided correctly
+        int ret =
+            snprintf(buffer, kTmpStrBufferSize,
+                     "%s P50 : %f P95 : %f P99 : %f P100 : %f COUNT : %" PRIu64
+                     " SUM : %" PRIu64 "\n",
+                     h.second.c_str(), hData.median, hData.percentile95,
+                     hData.percentile99, hData.max, hData.count, hData.sum);
+        if (ret < 0 || ret >= kTmpStrBufferSize) {
+          assert(false);
+          continue;
         }
+        res.append(buffer);
+      }
+      for (const auto& h : titandb::TitanHistogramsNameMap) {
+        assert(h.first < titandb::TITAN_HISTOGRAM_ENUM_MAX);
+        char buffer[kTmpStrBufferSize];
+        HistogramData hData;
+        dbstats->histogramData(h.first, &hData);
+        // don't handle failures - buffer should always be big enough and
+        // arguments should be provided correctly
+        int ret =
+            snprintf(buffer, kTmpStrBufferSize,
+                     "%s P50 : %f P95 : %f P99 : %f P100 : %f COUNT : %" PRIu64
+                     " SUM : %" PRIu64 "\n",
+                     h.second.c_str(), hData.median, hData.percentile95,
+                     hData.percentile99, hData.max, hData.count, hData.sum);
+        if (ret < 0 || ret >= kTmpStrBufferSize) {
+          assert(false);
+          continue;
+        }
+        res.append(buffer);
+      }
+      res.shrink_to_fit();
+      fprintf(stdout, "STATISTICS:\n%s\n", res.c_str());
     }
+
+    if (!FLAGS_gc_time_list_path.empty()) {
+      std::vector<std::vector<uint64_t>> result;
+      reinterpret_cast<titandb::TitanDB*>(db_.db)->GetGCTimeStats(&result);
+      std::ofstream ofstream_gc_split(FLAGS_gc_time_list_path,
+                                      std::ios::app | std::ofstream::binary);
+      ofstream_gc_split << "start time,end time,read lsm micros,update lsm "
+                           "micros,read blob micros,write blob micros,read lsm "
+                           "num,read blob num,write back num"
+                        << std::endl;
+      for (const auto& item : result) {
+        for (const auto& i : item) {
+          ofstream_gc_split << i << ",";
+        }
+        ofstream_gc_split << std::endl;
+      }
+      ofstream_gc_split.close();
+    }
+
     if (FLAGS_simcache_size >= 0) {
       fprintf(stdout, "SIMULATOR CACHE STATISTICS:\n%s\n",
               static_cast_with_check<SimCache, Cache>(cache_.get())
@@ -3853,8 +3888,11 @@ class Benchmark {
     opts->range_merge = FLAGS_titan_range_merge;
     opts->disable_background_gc = FLAGS_titan_disable_background_gc;
     opts->max_background_gc = FLAGS_titan_max_background_gc;
-    opts->min_gc_batch_size = 128 << 20;
     opts->blob_file_compression = FLAGS_compression_type_e;
+    opts->blob_file_discardable_ratio = FLAGS_blob_file_discardable_ratio;
+    opts->blob_file_target_size = FLAGS_blob_db_file_size;
+    opts->max_gc_batch_size = FLAGS_max_gc_batch_size;
+    opts->min_gc_batch_size = FLAGS_min_gc_batch_size;
     if (FLAGS_titan_blob_cache_size > 0) {
       opts->blob_cache = NewLRUCache(FLAGS_titan_blob_cache_size);
     }
@@ -4146,6 +4184,7 @@ class Benchmark {
   void DoWrite(ThreadState* thread, WriteMode write_mode) {
     const int test_duration = write_mode == RANDOM ? FLAGS_duration : 0;
     const int64_t num_ops = writes_ == 0 ? num_ : writes_;
+    std::vector<std::string> saved_keys;
 
     size_t num_key_gens = 1;
     if (db_.db == nullptr) {
@@ -4224,6 +4263,9 @@ class Benchmark {
       for (int64_t j = 0; j < entries_per_batch_; j++) {
         int64_t rand_num = key_gens[id]->Next();
         GenerateKeyFromInt(rand_num, FLAGS_num, &key);
+        if (FLAGS_save_keys) {
+          saved_keys.push_back(key.ToString());
+        }
         if (use_blob_db_) {
 #ifndef ROCKSDB_LITE
           Slice val = gen.Generate(value_size_);
@@ -4304,7 +4346,7 @@ class Benchmark {
         }
 
         if (usecs_since_last >
-            (FLAGS_sine_write_rate_interval_milliseconds * uint64_t{1000})) {
+            (FLAGS_sine_write_rate_interval_milliseconds* uint64_t{1000})) {
           double usecs_since_start =
               static_cast<double>(now - thread->stats.GetStart());
           thread->stats.ResetSineInterval();
@@ -4323,6 +4365,16 @@ class Benchmark {
         exit(1);
       }
     }
+
+    if (FLAGS_save_keys) {
+      std::ofstream ofstream_save_keys(FLAGS_path_save_keys,
+                                       std::ios::app | std::ofstream::binary);
+      for (const auto& item : saved_keys) {
+        ofstream_save_keys << item;
+      }
+      ofstream_save_keys.close();
+    }
+
     thread->stats.AddBytes(bytes);
   }
 
@@ -5072,7 +5124,7 @@ class Benchmark {
       }
 
       if (usecs_since_last >
-          (FLAGS_sine_mix_rate_interval_milliseconds * uint64_t{1000})) {
+          (FLAGS_sine_mix_rate_interval_milliseconds* uint64_t{1000})) {
         double usecs_since_start =
             static_cast<double>(now - thread->stats.GetStart());
         thread->stats.ResetSineInterval();
@@ -5086,7 +5138,7 @@ class Benchmark {
             NewGenericRateLimiter(static_cast<int64_t>(write_rate)));
         thread->shared->read_rate_limiter.reset(NewGenericRateLimiter(
             static_cast<int64_t>(read_rate),
-            FLAGS_sine_mix_rate_interval_milliseconds * uint64_t{1000}, 10,
+            FLAGS_sine_mix_rate_interval_milliseconds* uint64_t{1000}, 10,
             RateLimiter::Mode::kReadsOnly));
       }
       // Start the query
@@ -5712,21 +5764,45 @@ class Benchmark {
     int64_t bytes = 0;
     Duration duration(FLAGS_duration, readwrites_);
 
+    std::vector<std::string> local_keys;
+    uint64_t length_local_keys = 0;
+    if (FLAGS_use_local_keys) {
+      std::ifstream ifs_local_keys(FLAGS_path_save_keys, std::ifstream::binary);
+      char* data = new char[key_size_];
+      while (!ifs_local_keys.eof()) {
+        ifs_local_keys.read(data, key_size_);
+        std::string tmp_data(data, key_size_);
+        local_keys.push_back(tmp_data);
+      }
+      ifs_local_keys.close();
+      delete[] data;
+      length_local_keys = local_keys.size() - 1;
+      fprintf(stdout, "load local keys:%lu\n", length_local_keys);
+    }
+
     std::unique_ptr<const char[]> key_guard;
     Slice key = AllocateKey(&key_guard);
     // the number of iterations is the larger of read_ or write_
     while (!duration.Done(1)) {
       DB* db = SelectDB(thread);
-      GenerateKeyFromInt(thread->rand.Next() % FLAGS_num, FLAGS_num, &key);
-
-      auto status = db->Get(options, key, &value);
-      if (status.ok()) {
-        ++found;
-        bytes += key.size() + value.size();
-      } else if (!status.IsNotFound()) {
-        fprintf(stderr, "Get returned an error: %s\n",
-                status.ToString().c_str());
-        abort();
+      if (FLAGS_use_local_keys) {
+        uint64_t pos = thread->rand.Next() % length_local_keys;
+        key = Slice(local_keys[pos]);
+        if ((int)key.size() == key_size_) {
+          ++found;
+          bytes += key.size() + value.size();
+        }
+      } else {
+        GenerateKeyFromInt(thread->rand.Next() % FLAGS_num, FLAGS_num, &key);
+        auto status = db->Get(options, key, &value);
+        if (status.ok()) {
+          ++found;
+          bytes += key.size() + value.size();
+        } else if (!status.IsNotFound()) {
+          fprintf(stderr, "Get returned an error: %s\n",
+                  status.ToString().c_str());
+          abort();
+        }
       }
 
       if (thread->shared->write_rate_limiter) {
@@ -6467,8 +6543,8 @@ int db_bench_tool(int argc, char** argv) {
   }
 #endif  // ROCKSDB_LITE
   if (FLAGS_statistics) {
-//    dbstats = rocksdb::CreateDBStatistics();
-    dbstats= rocksdb::titandb::CreateDBStatistics();
+    //    dbstats = rocksdb::CreateDBStatistics();
+    dbstats = rocksdb::titandb::CreateDBStatistics();
   }
   if (dbstats) {
     dbstats->set_stats_level(static_cast<StatsLevel>(FLAGS_stats_level));

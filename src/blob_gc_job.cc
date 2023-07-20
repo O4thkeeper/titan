@@ -532,7 +532,6 @@ Status BlobGCJob::InstallOutputBlobFiles() {
 }
 
 Status BlobGCJob::RewriteValidKeyToLSM() {
-  TitanStopWatch sw(env_, metrics_.gc_update_lsm_micros);
   Status s;
   auto* db_impl = reinterpret_cast<DBImpl*>(base_db_);
 
@@ -542,44 +541,47 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
 
   std::unordered_map<uint64_t, uint64_t>
       dropped;  // blob_file_number -> dropped_size
-  for (auto& write_batch : rewrite_batches_) {
-    if (blob_gc_->GetColumnFamilyData()->IsDropped()) {
-      s = Status::Aborted("Column family drop");
-      break;
-    }
-    if (IsShutingDown()) {
-      s = Status::ShutdownInProgress();
-      break;
-    }
-    s = db_impl->WriteWithCallback(wo, &write_batch.first, &write_batch.second);
-    metrics_.gc_num_write_back++;
-    const auto& new_blob_index = write_batch.second.new_blob_index();
-    if (s.ok()) {
-      if (new_blob_index.blob_handle.size > 0) {
-        // Rewritten as blob record.
-        // count written bytes for new blob index.
-        metrics_.gc_bytes_written += write_batch.first.GetDataSize();
-        metrics_.gc_num_keys_relocated++;
-        metrics_.gc_bytes_relocated += write_batch.second.blob_record_size();
-      } else {
-        // Rewritten as inline value due to fallback mode.
-        metrics_.gc_num_keys_fallback++;
-        metrics_.gc_bytes_fallback += write_batch.second.blob_record_size();
+  {
+    TitanStopWatch sw(env_, metrics_.gc_update_lsm_micros);
+    for (auto& write_batch : rewrite_batches_) {
+      if (blob_gc_->GetColumnFamilyData()->IsDropped()) {
+        s = Status::Aborted("Column family drop");
+        break;
       }
-    } else if (s.IsBusy()) {
-      metrics_.gc_num_keys_overwritten++;
-      metrics_.gc_bytes_overwritten += write_batch.second.blob_record_size();
-      // The key is overwritten in the meanwhile. Drop the blob record.
-      // Though record is dropped, the diff won't counted in discardable
-      // ratio,
-      // so we should update the live_data_size here.
-      dropped[new_blob_index.file_number] += new_blob_index.blob_handle.size;
-    } else {
-      // We hit an error.
-      break;
+      if (IsShutingDown()) {
+        s = Status::ShutdownInProgress();
+        break;
+      }
+      s = db_impl->WriteWithCallback(wo, &write_batch.first, &write_batch.second);
+      metrics_.gc_num_write_back++;
+      const auto& new_blob_index = write_batch.second.new_blob_index();
+      if (s.ok()) {
+        if (new_blob_index.blob_handle.size > 0) {
+          // Rewritten as blob record.
+          // count written bytes for new blob index.
+          metrics_.gc_bytes_written += write_batch.first.GetDataSize();
+          metrics_.gc_num_keys_relocated++;
+          metrics_.gc_bytes_relocated += write_batch.second.blob_record_size();
+        } else {
+          // Rewritten as inline value due to fallback mode.
+          metrics_.gc_num_keys_fallback++;
+          metrics_.gc_bytes_fallback += write_batch.second.blob_record_size();
+        }
+      } else if (s.IsBusy()) {
+        metrics_.gc_num_keys_overwritten++;
+        metrics_.gc_bytes_overwritten += write_batch.second.blob_record_size();
+        // The key is overwritten in the meanwhile. Drop the blob record.
+        // Though record is dropped, the diff won't counted in discardable
+        // ratio,
+        // so we should update the live_data_size here.
+        dropped[new_blob_index.file_number] += new_blob_index.blob_handle.size;
+      } else {
+        // We hit an error.
+        break;
+      }
+      // count read bytes in write callback
+      metrics_.gc_bytes_read += write_batch.second.read_bytes();
     }
-    // count read bytes in write callback
-    metrics_.gc_bytes_read += write_batch.second.read_bytes();
   }
   if (s.IsBusy()) {
     s = Status::OK();
