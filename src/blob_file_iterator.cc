@@ -1,10 +1,9 @@
 #include "blob_file_iterator.h"
 
-#include "table/block_based/block_based_table_reader.h"
-#include "util/crc32c.h"
-
 #include "blob_file_reader.h"
+#include "table/block_based/block_based_table_reader.h"
 #include "util.h"
+#include "util/crc32c.h"
 
 namespace rocksdb {
 namespace titandb {
@@ -16,8 +15,6 @@ BlobFileIterator::BlobFileIterator(
       file_number_(file_name),
       file_size_(file_size),
       titan_cf_options_(titan_cf_options) {}
-
-BlobFileIterator::~BlobFileIterator() {}
 
 bool BlobFileIterator::Init() {
   Slice slice;
@@ -108,6 +105,7 @@ void BlobFileIterator::IterateForPrev(uint64_t offset) {
   uint64_t total_length = 0;
   FixedSlice<kRecordHeaderSize> header_buffer;
   iterate_offset_ = header_size_;
+  iterate_index_ = 0;
   for (; iterate_offset_ < offset; iterate_offset_ += total_length) {
     // With for_compaction=true, rate_limiter is enabled. Since
     // BlobFileIterator is only used for GC, we always set for_compaction to
@@ -119,9 +117,14 @@ void BlobFileIterator::IterateForPrev(uint64_t offset) {
     status_ = decoder_.DecodeHeader(&header_buffer);
     if (!status_.ok()) return;
     total_length = kRecordHeaderSize + decoder_.GetRecordSize();
+
+    iterate_index_++;
   }
 
-  if (iterate_offset_ > offset) iterate_offset_ -= total_length;
+  if (iterate_offset_ > offset) {
+    iterate_offset_ -= total_length;
+    iterate_index_--;
+  }
   valid_ = false;
 }
 
@@ -152,6 +155,8 @@ void BlobFileIterator::GetBlobRecord() {
 
   cur_record_offset_ = iterate_offset_;
   cur_record_size_ = kRecordHeaderSize + record_size;
+  cur_record_index_ = iterate_index_;
+  iterate_index_++;
   iterate_offset_ += cur_record_size_;
   valid_ = true;
 }
@@ -186,6 +191,16 @@ void BlobFileIterator::PrefetchAndGet() {
   if (readahead_end_offset_ < iterate_offset_) {
     readahead_end_offset_ = iterate_offset_;
   }
+}
+bool BlobFileIterator::ValidateByBitMap() {
+  int result;
+  Status s = bitmap_->GetBit(cur_record_index_, &result);
+  assert(s.ok());
+
+  return result == 0;
+}
+void BlobFileIterator::SetBitMap(std::unique_ptr<BitMap>&& bitmap) {
+  bitmap_ = std::move(bitmap);
 }
 
 BlobFileMergeIterator::BlobFileMergeIterator(

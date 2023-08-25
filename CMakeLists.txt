@@ -152,7 +152,9 @@ if (WITH_TITAN_TESTS AND (CMAKE_BUILD_TYPE STREQUAL "Debug"))
         titan_options_test
         util_test
         compaction_filter_test
-        version_test)
+        version_test
+        blob_validation_check_test
+        blob_validation_collector_test)
 
   foreach(test ${TESTS})
     add_executable(titan_${test} src/${test}.cc)

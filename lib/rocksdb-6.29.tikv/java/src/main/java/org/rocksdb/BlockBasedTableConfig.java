@@ -645,8 +645,8 @@ public class BlockBasedTableConfig extends TableFormatConfig {
   /**
    * Set the Read amplification bytes per-bit.
    *
-   * If used, For every data block we load into memory, we will create a bitmap
-   * of size ((block_size / `read_amp_bytes_per_bit`) / 8) bytes. This bitmap
+   * If used, For every data block we load into memory, we will create a bitmap_
+   * of size ((block_size / `read_amp_bytes_per_bit`) / 8) bytes. This bitmap_
    * will be used to figure out the percentage we actually read of the blocks.
    *
    * When this feature is used Tickers::READ_AMP_ESTIMATE_USEFUL_BYTES and

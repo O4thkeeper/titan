@@ -2,6 +2,7 @@
 
 #include "blob_file_manager.h"
 #include "blob_file_set.h"
+#include "blob_validation_check.h"
 #include "db/db_impl/db_impl.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/threadpool.h"
@@ -226,6 +227,16 @@ class TitanDBImpl : public TitanDB {
   Status ExtractGCStatsFromTableProperty(
       const TableProperties& table_properties, bool to_add,
       std::map<uint64_t, int64_t>* blob_file_size_diff);
+
+  Status ExtractBlobValidationFromTableProperty(
+      const std::shared_ptr<const TableProperties>& table_properties,
+      std::unordered_map<uint64_t, std::vector<uint64_t>>*
+          blob_validation_diff_index);
+
+  Status ExtractBlobValidationFromTableProperty(
+      const TableProperties& table_properties,
+      std::unordered_map<uint64_t, std::vector<uint64_t>>*
+          blob_validation_diff_index);
 
   // REQUIRE: mutex_ held
   void AddToGCQueue(uint32_t column_family_id) {

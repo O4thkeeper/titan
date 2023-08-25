@@ -106,6 +106,7 @@ class BlobGCJob::BlobFileMergeIteratorWithReadStats {
   Slice value() const { return gc_iter_->value(); }
   Status status() const { return gc_iter_->status(); }
   BlobIndex GetBlobIndex() { return gc_iter_->GetBlobIndex(); }
+  bool ValidateByBitMap() { return gc_iter_->ValidateByBitMap(); }
 
  private:
   std::unique_ptr<BlobFileMergeIterator> gc_iter_;
@@ -131,7 +132,8 @@ BlobGCJob::BlobGCJob(BlobGC* blob_gc, DB* db, port::Mutex* mutex,
       blob_file_set_(blob_file_set),
       log_buffer_(log_buffer),
       shuting_down_(shuting_down),
-      stats_(stats) {}
+      stats_(stats),
+      use_bitmap_(blob_gc->titan_cf_options().use_bitmap) {}
 
 BlobGCJob::~BlobGCJob() {
   if (log_buffer_) {
@@ -238,7 +240,11 @@ Status BlobGCJob::DoRunGC() {
     }
 
     bool discardable = false;
-    s = DiscardEntry(gc_iter->key(), blob_index, &discardable);
+    if (use_bitmap_) {
+      discardable = !gc_iter->ValidateByBitMap();
+    } else {
+      s = DiscardEntry(gc_iter->key(), blob_index, &discardable);
+    }
     if (!s.ok()) {
       break;
     }
@@ -247,7 +253,11 @@ Status BlobGCJob::DoRunGC() {
       metrics_.gc_bytes_overwritten += blob_index.blob_handle.size;
       continue;
     }
-    last_key_is_fresh = true;
+    // should consider all kvs with the same key when using bitmap
+    // because the iter compares keys without snap.
+    if (!use_bitmap_){
+      last_key_is_fresh = true;
+    }
 
     if (blob_gc_->titan_cf_options().blob_run_mode ==
         TitanBlobRunMode::kFallback) {
@@ -382,6 +392,33 @@ Status BlobGCJob::BuildIterator(
         std::move(file), inputs[i]->file_number(), inputs[i]->file_size(),
         blob_gc_->titan_cf_options())));
   }
+  if (use_bitmap_) {
+    mutex_->Lock();
+    auto cf_id = blob_gc_->column_family_handle()->GetID();
+    auto bs = blob_file_set_->GetBlobStorage(cf_id).lock();
+    if (!bs) {
+      TITAN_LOG_ERROR(db_options_.info_log,
+                      "BlobGC::BuildIterator: Column family id:%" PRIu32
+                      " not Found.",
+                      cf_id);
+      return Status::NotFound(
+          "BlobGC::BuildIterator: Column family not Found.");
+    }
+    for (const auto& item : list) {
+      auto file = bs->FindFile(item->file_number()).lock();
+      if (file == nullptr || file->is_obsolete()) {
+        TITAN_LOG_ERROR(db_options_.info_log,
+                        "BlobGC::BuildIterator: File id:%" PRIu64 " not Found.",
+                        item->file_number());
+        return Status::NotFound("BlobGC::BuildIterator: File not Found.");
+      }
+      std::unique_ptr<BitMap> bitMap(new BitMap());
+      s = file->CopyInvalidEntryIndexesTo(bitMap.get());
+      assert(s.ok());
+      item->SetBitMap(std::move(bitMap));
+    }
+    mutex_->Unlock();
+  }
 
   if (s.ok())
     result->reset(new BlobFileMergeIterator(
@@ -479,8 +516,9 @@ Status BlobGCJob::InstallOutputBlobFiles() {
     metrics_.gc_num_new_files++;
 
     auto file = std::make_shared<BlobFileMeta>(
-        builder.first->GetNumber(), builder.first->GetFile()->GetFileSize(), 0,
-        0, builder.second->GetSmallestKey(), builder.second->GetLargestKey());
+        builder.first->GetNumber(), builder.first->GetFile()->GetFileSize(),
+        builder.second->NumEntries(), 0, builder.second->GetSmallestKey(),
+        builder.second->GetLargestKey());
     file->set_live_data_size(builder.second->live_data_size());
     file->FileStateTransit(BlobFileMeta::FileEvent::kGCOutput);
     RecordInHistogram(statistics(stats_), TITAN_GC_OUTPUT_FILE_SIZE,
@@ -541,6 +579,7 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
 
   std::unordered_map<uint64_t, uint64_t>
       dropped;  // blob_file_number -> dropped_size
+  std::unordered_map<uint64_t, std::vector<uint64_t>> dropped_index;
   {
     TitanStopWatch sw(env_, metrics_.gc_update_lsm_micros);
     for (auto& write_batch : rewrite_batches_) {
@@ -575,6 +614,10 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
         // ratio,
         // so we should update the live_data_size here.
         dropped[new_blob_index.file_number] += new_blob_index.blob_handle.size;
+        if (use_bitmap_) {
+          dropped_index[new_blob_index.file_number].push_back(
+              new_blob_index.blob_handle.index);
+        }
       } else {
         // We hit an error.
         break;
@@ -585,6 +628,9 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
   }
   if (s.IsBusy()) {
     s = Status::OK();
+  }
+  if (!s.ok()) {
+    return s;
   }
 
   mutex_->Lock();
@@ -602,6 +648,22 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
       SubStats(stats_, cf_id, file->GetDiscardableRatioLevel(), 1);
       file->UpdateLiveDataSize(-blob_file.second);
       AddStats(stats_, cf_id, file->GetDiscardableRatioLevel(), 1);
+      if (use_bitmap_) {
+        BitMap bm(file->file_entries());
+        for (const auto& index : dropped_index[blob_file.first]) {
+          s = bm.SetBit(index, 1);
+          if (!s.ok()) {
+            TITAN_LOG_ERROR(db_options_.info_log,
+                            "RewriteValidKeyToLSM: failed to set bit: file: "
+                            "%lu, num: %lu, index:%lu, error: %s",
+                            file->file_number(), file->file_entries(), index,
+                            s.ToString().c_str());
+            assert(false);
+          }
+        }
+        s = file->UpdateInvalidEntryIndexes(&bm);
+        assert(s.ok());
+      }
 
       blob_storage->ComputeGCScore();
     } else {

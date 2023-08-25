@@ -1,15 +1,13 @@
 #pragma once
 
 #include <cstdint>
-
 #include <queue>
 
+#include "blob_format.h"
 #include "file/random_access_file_reader.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "table/internal_iterator.h"
-
-#include "blob_format.h"
 #include "titan/options.h"
 #include "util.h"
 
@@ -25,7 +23,7 @@ class BlobFileIterator {
   BlobFileIterator(std::unique_ptr<RandomAccessFileReader>&& file,
                    uint64_t file_name, uint64_t file_size,
                    const TitanCFOptions& titan_cf_options);
-  ~BlobFileIterator();
+  ~BlobFileIterator() = default;
 
   bool Init();
   bool Valid() const;
@@ -35,6 +33,9 @@ class BlobFileIterator {
   Slice value() const;
   Status status() const { return status_; }
   uint64_t header_size() const { return header_size_; }
+  uint64_t file_number() const { return file_number_; }
+  bool ValidateByBitMap();
+  void SetBitMap(std::unique_ptr<BitMap>&& bitmap);
 
   void IterateForPrev(uint64_t);
 
@@ -43,6 +44,7 @@ class BlobFileIterator {
     blob_index.file_number = file_number_;
     blob_index.blob_handle.offset = cur_record_offset_;
     blob_index.blob_handle.size = cur_record_size_;
+    blob_index.blob_handle.index = cur_record_index_;
     return blob_index;
   }
 
@@ -64,6 +66,7 @@ class BlobFileIterator {
   BlobDecoder decoder_;
 
   uint64_t iterate_offset_{0};
+  uint64_t iterate_index_{0};
   std::vector<char> buffer_;
   OwnedSlice uncompressed_;
   BlobRecord cur_blob_record_;
@@ -74,6 +77,9 @@ class BlobFileIterator {
   uint64_t readahead_begin_offset_{0};
   uint64_t readahead_end_offset_{0};
   uint64_t readahead_size_{kMinReadaheadSize};
+
+  std::unique_ptr<BitMap> bitmap_{nullptr};
+  uint64_t cur_record_index_;
 
   void PrefetchAndGet();
   void GetBlobRecord();
@@ -98,6 +104,7 @@ class BlobFileMergeIterator {
   }
 
   BlobIndex GetBlobIndex() { return current_->GetBlobIndex(); }
+  bool ValidateByBitMap() { return current_->ValidateByBitMap(); }
 
  private:
   class BlobFileIterComparator {

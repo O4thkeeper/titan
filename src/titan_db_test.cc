@@ -1,8 +1,12 @@
 #include <cinttypes>
-
 #include <unordered_map>
 
+#include "blob_file_iterator.h"
+#include "blob_file_reader.h"
+#include "blob_file_size_collector.h"
 #include "db/db_impl/db_impl.h"
+#include "db_impl.h"
+#include "db_iter.h"
 #include "file/filename.h"
 #include "monitoring/statistics.h"
 #include "options/cf_options.h"
@@ -10,15 +14,9 @@
 #include "rocksdb/utilities/debug.h"
 #include "test_util/sync_point.h"
 #include "test_util/testharness.h"
-#include "util/random.h"
-
-#include "blob_file_iterator.h"
-#include "blob_file_reader.h"
-#include "blob_file_size_collector.h"
-#include "db_impl.h"
-#include "db_iter.h"
 #include "titan/db.h"
 #include "titan_fault_injection_test_env.h"
+#include "util/random.h"
 
 namespace rocksdb {
 namespace titandb {
@@ -57,11 +55,13 @@ class TitanDBTest : public testing::Test {
 
   void Open() {
     if (cf_names_.empty()) {
+      options_.use_bitmap = true;
       ASSERT_OK(TitanDB::Open(options_, dbname_, &db_));
       db_impl_ = reinterpret_cast<TitanDBImpl*>(db_);
     } else {
       TitanDBOptions db_options(options_);
       TitanCFOptions cf_options(options_);
+      cf_options.use_bitmap = true;
       cf_names_.clear();
       ASSERT_OK(DB::ListColumnFamilies(db_options, dbname_, &cf_names_));
       std::vector<TitanCFDescriptor> descs;

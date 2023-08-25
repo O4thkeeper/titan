@@ -91,6 +91,8 @@ class BlobGCJob {
   uint64_t io_bytes_read_ = 0;
   uint64_t io_bytes_written_ = 0;
 
+  bool use_bitmap_{false};
+
   Status DoRunGC();
   void BatchWriteNewIndices(BlobFileBuilder::OutContexts &contexts, Status *s);
   Status BuildIterator(std::unique_ptr<BlobFileMergeIterator> *result);

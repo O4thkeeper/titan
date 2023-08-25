@@ -2,13 +2,12 @@
 
 #include <cinttypes>
 
-#include "file/filename.h"
-#include "test_util/testharness.h"
-#include "util/random.h"
-
 #include "blob_file_builder.h"
 #include "blob_file_cache.h"
 #include "blob_file_reader.h"
+#include "file/filename.h"
+#include "test_util/testharness.h"
+#include "util/random.h"
 
 namespace rocksdb {
 namespace titandb {
@@ -257,6 +256,36 @@ TEST_F(BlobFileIteratorTest, MergeIterator) {
               contexts[i - 1]->new_blob_index.blob_handle);
   }
   ASSERT_EQ(i, kMaxKeyNum);
+}
+
+TEST_F(BlobFileIteratorTest, ValidateByBitMap) {
+  TitanOptions options;
+  NewBuilder();
+
+  const int n = 1000;
+  BlobFileBuilder::OutContexts contexts;
+  std::unique_ptr<BitMap> bm(new BitMap(n));
+  for (int i = 0; i < n; i++) {
+    AddKeyValue(GenKey(i), GenValue(i), contexts);
+    bm->SetBit(i, i % 2);
+  }
+
+  FinishBuilder(contexts);
+
+  NewBlobFileIterator();
+  blob_file_iterator_->SetBitMap(std::move(bm));
+
+  blob_file_iterator_->SeekToFirst();
+  ASSERT_EQ(contexts.size(), n);
+  for (int i = 0; i < n; blob_file_iterator_->Next(), i++) {
+    ASSERT_OK(blob_file_iterator_->status());
+    ASSERT_EQ(blob_file_iterator_->Valid(), true);
+    ASSERT_EQ(GenKey(i), blob_file_iterator_->key());
+    ASSERT_EQ(GenValue(i), blob_file_iterator_->value());
+    BlobIndex blob_index = blob_file_iterator_->GetBlobIndex();
+    ASSERT_EQ(contexts[i]->new_blob_index.blob_handle, blob_index.blob_handle);
+    ASSERT_TRUE(blob_file_iterator_->ValidateByBitMap() ^ (i % 2 > 0));
+  }
 }
 
 }  // namespace titandb

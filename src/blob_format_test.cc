@@ -23,6 +23,7 @@ TEST(BlobFormatTest, BlobHandle) {
   CheckCodec(input);
   input.offset = 2;
   input.size = 3;
+  input.index=4;
   CheckCodec(input);
 }
 
@@ -32,6 +33,7 @@ TEST(BlobFormatTest, BlobIndex) {
   input.file_number = 1;
   input.blob_handle.offset = 2;
   input.blob_handle.size = 3;
+  input.blob_handle.index=4;
   CheckCodec(input);
 }
 

@@ -11,6 +11,8 @@
 #include "blob_file_iterator.h"
 #include "blob_file_size_collector.h"
 #include "blob_gc.h"
+#include "blob_validation_check.h"
+#include "blob_validation_collector.h"
 #include "compaction_filter.h"
 #include "db/arena_wrapped_db_iter.h"
 #include "db_iter.h"
@@ -278,6 +280,10 @@ Status TitanDBImpl::OpenImpl(const std::vector<TitanCFDescriptor>& descs,
     cf_opts.disable_auto_compactions = true;
     cf_opts.table_properties_collector_factories.emplace_back(
         std::make_shared<BlobFileSizeCollectorFactory>());
+    if (desc.options.use_bitmap) {
+      cf_opts.table_properties_collector_factories.emplace_back(
+          std::make_shared<BlobValidationCollectorFactory>());
+    }
     titan_table_factories.push_back(std::make_shared<TitanTableFactory>(
         db_options_, desc.options, this, blob_manager_, &mutex_,
         blob_file_set_.get(), stats_.get()));
@@ -420,6 +426,10 @@ Status TitanDBImpl::CreateColumnFamilies(
     options.table_factory = titan_table_factory.back();
     options.table_properties_collector_factories.emplace_back(
         std::make_shared<BlobFileSizeCollectorFactory>());
+    if (desc.options.use_bitmap) {
+      options.table_properties_collector_factories.emplace_back(
+          std::make_shared<BlobValidationCollectorFactory>());
+    }
     if (options.compaction_filter != nullptr ||
         options.compaction_filter_factory != nullptr) {
       std::shared_ptr<TitanCompactionFilterFactory> titan_cf_factory =
@@ -1299,6 +1309,108 @@ void TitanDBImpl::OnCompactionCompleted(
   update_diff(compaction_job_info.input_files, false /*to_add*/);
   update_diff(compaction_job_info.output_files, true /*to_add*/);
 
+  bool use_bitmap = false;
+  {
+    MutexLock l(&mutex_);
+    use_bitmap =
+        cf_info_[compaction_job_info.cf_id].immutable_cf_options.use_bitmap;
+  }
+  if (use_bitmap) {
+    std::unordered_map<uint64_t, std::vector<uint64_t>>
+        blob_may_invalid_indexes;
+    std::unordered_map<uint64_t, std::vector<uint64_t>> blob_valid_indexes;
+    auto validation_diff =
+        [&](const std::vector<std::string>& files,
+            std::unordered_map<uint64_t, std::vector<uint64_t>>*
+                blob_validation_diff_index) {
+          for (const auto& file : files) {
+            auto prop_iter = prop_collection.find(file);
+            if (prop_iter == prop_collection.end()) {
+              TITAN_LOG_WARN(
+                  db_options_.info_log,
+                  "OnCompactionCompleted[%d]: No table properties for file %s.",
+                  compaction_job_info.job_id, file.c_str());
+              continue;
+            }
+            Status blob_validation_status =
+                ExtractBlobValidationFromTableProperty(
+                    prop_iter->second, blob_validation_diff_index);
+            if (!blob_validation_status.ok()) {
+              TITAN_LOG_ERROR(db_options_.info_log,
+                              "OnCompactionCompleted[%d]: failed to extract "
+                              "blob validation from "
+                              "table property: compaction file: %s, error: %s",
+                              compaction_job_info.job_id, file.c_str(),
+                              blob_validation_status.ToString().c_str());
+              assert(false);
+            }
+          }
+        };
+    validation_diff(compaction_job_info.input_files, &blob_may_invalid_indexes);
+    validation_diff(compaction_job_info.output_files, &blob_valid_indexes);
+    {
+      MutexLock l(&mutex_);
+      auto bs =
+          blob_file_set_->GetBlobStorage(compaction_job_info.cf_id).lock();
+      if (!bs) {
+        TITAN_LOG_ERROR(db_options_.info_log,
+                        "OnCompactionCompleted[%d] Column family id:%" PRIu32
+                        " not Found.",
+                        compaction_job_info.job_id, compaction_job_info.cf_id);
+        return;
+      }
+
+      // init bitmap, change indexes to bitmap
+      Status s;
+      for (const auto& item : blob_may_invalid_indexes) {
+        uint64_t file_number = item.first;
+        std::shared_ptr<BlobFileMeta> file = bs->FindFile(file_number).lock();
+        if (file == nullptr || file->is_obsolete()) {
+          // File has been GC out.
+          continue;
+        }
+        uint64_t file_entries = file->file_entries();
+        BitMap bm(file_entries);
+        for (const auto& index : item.second) {
+          s = bm.SetBit(index, 1);
+          if (!s.ok()) {
+            TITAN_LOG_ERROR(db_options_.info_log,
+                            "OnCompactionCompleted: failed to set bit: file: "
+                            "%lu, num: %lu, index:%lu, error: %s",
+                            file->file_number(), file->file_entries(), index,
+                            s.ToString().c_str());
+            assert(false);
+          }
+        }
+        auto valid_indexes_iter = blob_valid_indexes.find(file_number);
+        if (valid_indexes_iter != blob_valid_indexes.end()) {
+          for (const auto& index : valid_indexes_iter->second) {
+            s = bm.SetBit(index, 0);
+            if (!s.ok()) {
+              TITAN_LOG_ERROR(db_options_.info_log,
+                              "OnCompactionCompleted: failed to set bit: file: "
+                              "%lu, num: %lu, index:%lu, error: %s",
+                              file->file_number(), file->file_entries(), index,
+                              s.ToString().c_str());
+              assert(false);
+            }
+          }
+        }
+        Status update_invalid_entry_indexes_status =
+            file->UpdateInvalidEntryIndexes(&bm);
+        if (!update_invalid_entry_indexes_status.ok()) {
+          TITAN_LOG_ERROR(
+              db_options_.info_log,
+              "OnCompactionCompleted[%d]: failed to update blob "
+              "validation: compaction file: %lu, error: %s",
+              compaction_job_info.job_id, file->file_number(),
+              update_invalid_entry_indexes_status.ToString().c_str());
+          assert(false);
+        }
+      }
+    }
+  }
+
   {
     MutexLock l(&mutex_);
     auto bs = blob_file_set_->GetBlobStorage(compaction_job_info.cf_id).lock();
@@ -1493,7 +1605,6 @@ void TitanDBImpl::WaitBackgroundJob() {
     }
   }
 }
-
 
 }  // namespace titandb
 }  // namespace rocksdb

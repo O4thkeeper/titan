@@ -96,10 +96,12 @@ Status BlobDecoder::DecodeRecord(Slice* src, BlobRecord* record,
 void BlobHandle::EncodeTo(std::string* dst) const {
   PutVarint64(dst, offset);
   PutVarint64(dst, size);
+  PutVarint64(dst, index);
 }
 
 Status BlobHandle::DecodeFrom(Slice* src) {
-  if (!GetVarint64(src, &offset) || !GetVarint64(src, &size)) {
+  if (!GetVarint64(src, &offset) || !GetVarint64(src, &size) ||
+      !GetVarint64(src, &index)) {
     return Status::Corruption("BlobHandle");
   }
   return Status::OK();
@@ -167,6 +169,9 @@ Status BlobFileMeta::DecodeFrom(Slice* src) {
   } else {
     return Status::Corruption("BlobLargestKey decode failed");
   }
+
+  invalid_entry_indexes_ = std::unique_ptr<BitMap>(new BitMap(file_entries_));
+
   return Status::OK();
 }
 
@@ -267,6 +272,14 @@ void BlobFileMeta::Dump(bool with_keys) const {
             Slice(largest_key_).ToString(true /*hex*/).c_str());
   }
   fprintf(stdout, "\n");
+}
+Status BlobFileMeta::UpdateInvalidEntryIndexes(BitMap* invalid_bits) {
+  Status s;
+  s = invalid_entry_indexes_->BitOps(BitMap::BitOpsType::kBitOr, invalid_bits);
+  return s;
+}
+Status BlobFileMeta::CopyInvalidEntryIndexesTo(BitMap* dest) {
+  return invalid_entry_indexes_->CopyTo(dest);
 }
 
 void BlobFileHeader::EncodeTo(std::string* dst) const {

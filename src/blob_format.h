@@ -1,10 +1,10 @@
 #pragma once
 
+#include "blob_validation_check.h"
 #include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "table/format.h"
-
 #include "util.h"
 
 namespace rocksdb {
@@ -132,15 +132,16 @@ class BlobDecoder {
 
 // Format of blob handle (not fixed size):
 //
-//    +----------+----------+
-//    |  offset  |   size   |
-//    +----------+----------+
-//    | Varint64 | Varint64 |
-//    +----------+----------+
+//    +----------+----------+----------+
+//    |  offset  |   size   |  index   |
+//    +----------+----------+----------+
+//    | Varint64 | Varint64 | Varint64 |
+//    +----------+----------+----------+
 //
 struct BlobHandle {
   uint64_t offset{0};
   uint64_t size{0};
+  uint64_t index{0};
 
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* src);
@@ -150,11 +151,11 @@ struct BlobHandle {
 
 // Format of blob index (not fixed size):
 //
-//    +------+-------------+------------------------------------+
-//    | type | file number |            blob handle             |
-//    +------+-------------+------------------------------------+
-//    | char |  Varint64   | Varint64(offsest) + Varint64(size) |
-//    +------+-------------+------------------------------------+
+//    +------+-------------+------------------------------------------------+
+//    | type | file number |                   blob handle                  |
+//    +------+-------------+------------------------------------------------+
+//    | char |  Varint64   |Varint64(offsest)+Varint64(size)+Varint64(index)|
+//    +------+-------------+------------------------------------------------+
 //
 // It is stored in LSM-Tree as the value of key, then Titan can use this blob
 // index to locate actual value from blob file.
@@ -232,7 +233,10 @@ class BlobFileMeta {
         file_entries_(_file_entries),
         file_level_(_file_level),
         smallest_key_(_smallest_key),
-        largest_key_(_largest_key) {}
+        largest_key_(_largest_key) {
+//    todo init when use_bitmap is set
+    invalid_entry_indexes_ = std::unique_ptr<BitMap>(new BitMap(_file_entries));
+  }
 
   friend bool operator==(const BlobFileMeta& lhs, const BlobFileMeta& rhs);
 
@@ -273,6 +277,8 @@ class BlobFileMeta {
   }
   TitanInternalStats::StatsType GetDiscardableRatioLevel() const;
   void Dump(bool with_keys) const;
+  Status UpdateInvalidEntryIndexes(BitMap* invalid_bits);
+  Status CopyInvalidEntryIndexesTo(BitMap* dest);
 
  private:
   // Persistent field
@@ -301,6 +307,8 @@ class BlobFileMeta {
   // `OnCompactionCompleted()` is called.
   std::atomic<uint64_t> live_data_size_{0};
   std::atomic<FileState> state_{FileState::kInit};
+  // bitmap of entries: 1 for invalid, 0 for valid
+  std::unique_ptr<BitMap> invalid_entry_indexes_;
 };
 
 // Format of blob file header for version 1 (8 bytes):

@@ -2,6 +2,7 @@
 #include "blob_file_size_collector.h"
 #include "blob_gc_job.h"
 #include "blob_gc_picker.h"
+#include "blob_validation_collector.h"
 #include "db_impl.h"
 #include "test_util/sync_point.h"
 #include "titan_logging.h"
@@ -48,6 +49,38 @@ Status TitanDBImpl::ExtractGCStatsFromTableProperty(
   return Status::OK();
 }
 
+Status TitanDBImpl::ExtractBlobValidationFromTableProperty(
+    const std::shared_ptr<const TableProperties>& table_properties,
+    std::unordered_map<uint64_t, std::vector<uint64_t>>*
+        blob_validation_diff_index) {
+  assert(blob_validation_diff_index != nullptr);
+  if (table_properties == nullptr) {
+    // No table property found. File may not contain blob indices.
+    return Status::OK();
+  }
+  return ExtractBlobValidationFromTableProperty(*table_properties,
+                                                blob_validation_diff_index);
+}
+
+Status TitanDBImpl::ExtractBlobValidationFromTableProperty(
+    const TableProperties& table_properties,
+    std::unordered_map<uint64_t, std::vector<uint64_t>>*
+        blob_validation_diff_index) {
+  auto& prop = table_properties.user_collected_properties;
+  auto prop_iter = prop.find(BlobValidationCollector::kPropertiesName);
+  if (prop_iter == prop.end()) {
+    // No table property found. File may not contain blob indices.
+    return Status::OK();
+  }
+  Slice prop_slice(prop_iter->second);
+  if (!BlobValidationCollector::Decode(&prop_slice,
+                                       blob_validation_diff_index)) {
+    return Status::Corruption("Failed to decode blob file size property.");
+  }
+
+  return Status::OK();
+}
+
 Status TitanDBImpl::InitializeGC(
     const std::vector<ColumnFamilyHandle*>& cf_handles) {
   assert(!initialized());
@@ -73,6 +106,8 @@ Status TitanDBImpl::InitializeGC(
         return s;
       }
     }
+//    todo [*]init bimap storage
+
     std::shared_ptr<BlobStorage> blob_storage =
         blob_file_set_->GetBlobStorage(cf_handle->GetID()).lock();
     assert(blob_storage != nullptr);

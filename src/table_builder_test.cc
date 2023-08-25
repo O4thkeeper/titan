@@ -1,15 +1,14 @@
 #include "table_builder.h"
 
-#include "file/filename.h"
-#include "table/table_builder.h"
-#include "table/table_reader.h"
-#include "test_util/testharness.h"
-
 #include "blob_file_manager.h"
 #include "blob_file_reader.h"
 #include "blob_file_set.h"
 #include "db_impl.h"
+#include "file/filename.h"
+#include "table/table_builder.h"
+#include "table/table_reader.h"
 #include "table_factory.h"
+#include "test_util/testharness.h"
 
 namespace rocksdb {
 namespace titandb {
@@ -362,6 +361,7 @@ TEST_F(TableBuilderTest, Basic) {
       BlobIndex index;
       ASSERT_OK(DecodeInto(iter->value(), &index));
       ASSERT_EQ(index.file_number, kTestFileNumber);
+      ASSERT_EQ(index.blob_handle.index, i / 2);
       BlobRecord record;
       PinnableSlice buffer;
       ASSERT_OK(blob_reader->Get(ro, index.blob_handle, &record, &buffer));
