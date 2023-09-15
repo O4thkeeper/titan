@@ -94,8 +94,9 @@ void GCDriver::run_gc_kernel(
                        *bufInputFiles, CL_TRUE, CL_MAP_WRITE, input_offset,
                        MAX_DATA_SIZE, nullptr, nullptr, &err))
     OCL_CHECK(err, err = m_q->finish())
-    int buf_size = 128 * 1024 * 1024;  // 128MB
-    int read_offset = 0;
+    long buf_size = 128 * 1024 * 1024;  // 128MB
+    long read_offset = 0;
+    auto p2p_read_start = std::chrono::system_clock::now();
     for (size_t iter = 0; iter < size / buf_size + 1; ++iter) {
       auto ret = pread(fd_p2p_in, (void*)p2pPtr, buf_size, read_offset);
       if (ret <= 0) {
@@ -104,10 +105,13 @@ void GCDriver::run_gc_kernel(
                   << ", errno:" << strerror(errno) << std::endl;
         exit(EXIT_FAILURE);
       }
-      std::cout << "INFO: Successfully transfer data: " << ret << std::endl;
-      read_offset += buf_size;
+      read_offset += ret;
       p2pPtr += buf_size;
     }
+    auto p2p_read_end = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now() - p2p_read_start);
+    std::cout << "INFO: Successfully transfer data(byte): " << read_offset
+              << ", time(s): " << p2p_read_end.count() << std::endl;
     file_sizes[i] = size;
     num_entries[i] = input_entries[i];
     (void)close(fd_p2p_in);
@@ -186,6 +190,7 @@ void GCDriver::run_gc_kernel(
   gcKernel.setArg(narg++, *bufIntputEntries);
   gcKernel.setArg(narg++, input_size);
 
+  auto kernel_start = std::chrono::system_clock::now();
   std::cout << "Kernel task start. " << std::endl;
   m_q->enqueueTask(gcKernel, nullptr, &kernelFinishEvent);
   writeWait.push_back(kernelFinishEvent);
@@ -193,7 +198,10 @@ void GCDriver::run_gc_kernel(
                                 CL_MIGRATE_MEM_OBJECT_HOST, &writeWait,
                                 &outputFinishEvent);
   outputFinishEvent.wait();
-  std::cout << "Kernel task finished. " << std::endl;
+  auto kernel_time_s = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now() - kernel_start);
+  std::cout << "Kernel task finished. Time used: " << kernel_time_s.count()
+            << "s" << std::endl;
 
   int fd_p2p_out =
       open(output_filename.c_str(), O_CREAT | O_WRONLY | O_DIRECT, 0777);
@@ -203,6 +211,7 @@ void GCDriver::run_gc_kernel(
     close(fd_p2p_out);
     exit(1);
   }
+  auto p2p_write_start = std::chrono::system_clock::now();
   auto ret = write(fd_p2p_out, output_p2p_ptr, output_meta_tmp[1]);
   if (ret <= 0) {
     std::cerr << "ERROR: write " << output_filename << " failed: " << ret
@@ -210,7 +219,10 @@ void GCDriver::run_gc_kernel(
               << ", errno:" << strerror(errno) << std::endl;
     exit(EXIT_FAILURE);
   }
-  std::cout << "INFO: Successfully transfer data: " << ret << std::endl;
+  auto p2p_write_end = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now() - p2p_write_start);
+  std::cout << "INFO: Successfully transfer data(byte): " << ret
+            << ", time(s): " << p2p_write_end.count() << std::endl;
   close(fd_p2p_out);
 
   uint64_t cur_key_offset = 0;

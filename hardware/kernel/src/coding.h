@@ -15,11 +15,6 @@ namespace xf {
 namespace gc {
 
 inline void DecodeFixed32(const unsigned char* input, uint32_t* value) {
-  //  if (kLittleEndian) {
-  //    memcpy(value, input, sizeof(uint32_t));
-  //    return true;
-  //  }
-  //  return false;
   uint32_t result = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t byte = *input;
@@ -30,11 +25,6 @@ inline void DecodeFixed32(const unsigned char* input, uint32_t* value) {
 }
 
 inline void DecodeFixed64(const unsigned char* input, uint64_t* value) {
-  //  if (kLittleEndian) {
-  //    memcpy(value, input, sizeof(uint64_t));
-  //    return true;
-  //  }
-  //  return false;
   uint64_t result = 0;
   for (int i = 0; i < 8; ++i) {
     uint64_t byte = *input;
@@ -45,11 +35,6 @@ inline void DecodeFixed64(const unsigned char* input, uint64_t* value) {
 }
 
 inline void EncodeFixed32(unsigned char* buf, uint32_t value) {
-  //  if (kLittleEndian) {
-  //    memcpy(buf, &value, sizeof(value));
-  //    return true;
-  //  }
-  //  return false;
   static const unsigned int B = 256;
   for (int i = 0; i < 4; ++i) {
     *(buf++) = (value & (B - 1)) | B;
@@ -58,11 +43,6 @@ inline void EncodeFixed32(unsigned char* buf, uint32_t value) {
 }
 
 inline void EncodeFixed64(unsigned char* buf, uint64_t value) {
-  //  if (kLittleEndian) {
-  //    memcpy(buf, &value, sizeof(value));
-  //    return true;
-  //  }
-  //  return false;
   static const unsigned int B = 256;
   for (int i = 0; i < 8; ++i) {
     *(buf++) = (value & (B - 1)) | B;
@@ -153,10 +133,10 @@ inline void DecodeVarint32AndValue(const unsigned char* data,
   uint32_t len = 0;
   DecodeVarint32(data, data + 5, len, offset);
   key_size = len;
-  //    memcpy(key, data + offset, len);
+  data += offset;
   for (int i = 0; i < len; ++i) {
 #pragma HLS pipeline ii = 1
-    *(key + i) = *(data + offset + i);
+    *(key + i) = *(data + i);
   }
   offset += len;
 }
@@ -164,7 +144,6 @@ inline void DecodeVarint32AndValue(const unsigned char* data,
 inline void EncodeVarint32AndValue(unsigned char* data, unsigned char* key,
                                    uint32_t key_size, uint64_t& offset) {
   EncodeVarint32(data, key_size, offset);
-  //    memcpy(data + offset, key, key_size);
   for (int i = 0; i < key_size; ++i) {
 #pragma HLS pipeline ii = 1
     *(data + offset + i) = *(key + i);
@@ -172,7 +151,9 @@ inline void EncodeVarint32AndValue(unsigned char* data, unsigned char* key,
   offset += key_size;
 }
 
-uint32_t Crc32c(uint32_t init_crc, const unsigned char* data, uint64_t n) {
+void Crc32c(uint32_t init_crc, const unsigned char* data, uint64_t n,
+            uint32_t* result) {
+#pragma HLS dataflow
   hls::stream<ap_uint<8> > dataStrm;
   hls::stream<ap_uint<32> > lenStrm;
   hls::stream<ap_uint<32> > crcInitStrm;
@@ -201,10 +182,8 @@ uint32_t Crc32c(uint32_t init_crc, const unsigned char* data, uint64_t n) {
                           crc32EndStrm);
 
   crc32EndStrm.read();
-  uint32_t result = crc32Strm.read();
+  *result = crc32Strm.read();
   crc32EndStrm.read();
-
-  return result;
 }
 
 }  // namespace gc

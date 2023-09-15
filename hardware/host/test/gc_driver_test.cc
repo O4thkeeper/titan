@@ -31,21 +31,21 @@ int main(int argc, char *argv[]) {
   //  1.blob for key of GenKey [0-1000)
   //  2.blob for key of GenKey [1000-2000)
   //  3.blob for key of GenKey [2000-3000)
-//  input_blob.push_back("/home/SmartSSD_Data/hfeng/titan/1.blob");
-//  input_blob.push_back("/home/SmartSSD_Data/hfeng/titan/2.blob");
-//  input_blob.push_back("/home/SmartSSD_Data/hfeng/titan/3.blob");
-    input_blob.push_back("/home/SmartSSD_data/hfeng/titan/11.blob");
+  input_blob.push_back("/home/SmartSSD_data/hfeng/titan/1.blob");
+  input_blob.push_back("/home/SmartSSD_data/hfeng/titan/2.blob");
+  input_blob.push_back("/home/SmartSSD_data/hfeng/titan/3.blob");
+  //    input_blob.push_back("/home/SmartSSD_data/hfeng/titan/11.blob");
 
   std::string ouput_blob("/home/SmartSSD_data/hfeng/titan/4.blob");
   //  std::string ouput_blob("/home/SmartSSD_Data/hfeng/titan/14.blob");
   std::vector<std::pair<size_t, unsigned char *>> bitmaps;
   std::vector<std::uint64_t> input_entries;
-  size_t bitmap_size = 100 / 8 + 1;
-  for (int i = 0; i < 1; ++i) {
+  size_t bitmap_size = 1000 / 8 + 1;
+  for (int i = 0; i < 3; ++i) {
     auto bitmap = (unsigned char *)aligned_alloc(1024, bitmap_size);
     memset(bitmap, 0, bitmap_size);
     bitmaps.emplace_back(bitmap_size, bitmap);
-    input_entries.push_back(2);
+    input_entries.push_back(3);
   }
 
   std::vector<std::pair<std::string, uint64_t>> rewrite_keys;
@@ -53,6 +53,5 @@ int main(int argc, char *argv[]) {
   driver.run_gc_kernel(input_blob, ouput_blob, bitmaps, input_entries, 0,
                        &rewrite_keys);
 
-  //  todo check output_blob and rewrite_keys
-  //  assert(rewrite_keys.size() == 3000);
+  assert(rewrite_keys.size() == 9);
 }

@@ -33,8 +33,6 @@ void gcKernel(const unsigned char (*input_datas)[MAX_DATA_SIZE],
   uint64_t* p_cur_output_key_offset = &cur_output_key_offset;
   xf::gc::EncodeHeader(output_data, p_cur_output_data_offset);
 
-//  todo init crc here
-
   for (uint64_t i = 0; i < size; ++i) {
     const unsigned char* input_data = input_datas[i];
     const unsigned char* input_bitmap = input_bitmaps[i];

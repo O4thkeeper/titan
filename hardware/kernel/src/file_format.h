@@ -11,10 +11,9 @@
 namespace xf {
 namespace gc {
 
-bool DecodeHeader(const unsigned char *data, uint64_t *cur_offset) {
+inline bool DecodeHeader(const unsigned char *data, uint64_t *cur_offset) {
   data += *cur_offset;
   unsigned char head_buf[kBlobMaxHeaderSize];
-  //  memcpy(head_buf, data, kBlobMaxHeaderSize);
   for (int i = 0; i < kBlobMaxHeaderSize; ++i) {
 #pragma HLS pipeline ii = 1
     head_buf[i] = data[i];
@@ -45,7 +44,6 @@ bool DecodeHeader(const unsigned char *data, uint64_t *cur_offset) {
 
 bool DecodeFooter(const unsigned char *data, uint64_t data_size) {
   unsigned char footer_buf[kBlobFooterSize];
-  //  memcpy(footer_buf, data + data_size - kBlobFooterSize, kBlobFooterSize);
   for (int i = 0; i < kBlobFooterSize; ++i) {
 #pragma HLS pipeline ii = 1
     footer_buf[i] = data[data_size - kBlobFooterSize + i];
@@ -68,15 +66,7 @@ bool DecodeFooter(const unsigned char *data, uint64_t data_size) {
   return true;
 }
 
-void EncodeHeader(unsigned char *data, uint64_t *cur_offset) {
-  //  data += *cur_offset;
-  //  if (EncodeFixed32(data, kHeaderMagicNumber) &&
-  //      EncodeFixed32(data + 4, kHeaderVersion2) && EncodeFixed32(data + 8,
-  //      0)) {
-  //    *cur_offset += kBlobMaxHeaderSize;
-  //    return true;
-  //  }
-  //  return false;
+inline void EncodeHeader(unsigned char *data, uint64_t *cur_offset) {
   data += *cur_offset;
   EncodeFixed32(data, kHeaderMagicNumber);
   EncodeFixed32(data + 4, kHeaderVersion2);
@@ -95,12 +85,13 @@ void EncodeFooter(unsigned char *data, uint64_t *cur_offset) {
   EncodeVarint64(data, 0, var_offset);
   EncodeVarint64(data + var_offset, 0, var_offset);
   EncodeFixed64(data + kBlobFooterSize - 12, kFooterMagicNumber);
-  uint32_t crc = Crc32c(0, data, kBlobFooterSize - 4);
+  uint32_t crc;
+  Crc32c(0, data, kBlobFooterSize - 4, &crc);
   EncodeFixed32(data + kBlobFooterSize - 4, crc);
   *cur_offset += kBlobFooterSize;
 }
 
-bool CheckValid(uint64_t offset, const unsigned char *bitmap) {
+inline bool CheckValid(uint64_t offset, const unsigned char *bitmap) {
   uint64_t byte, bit;
   uint64_t bitval;
 
@@ -112,7 +103,6 @@ bool CheckValid(uint64_t offset, const unsigned char *bitmap) {
 }
 
 inline void SetZero(unsigned char *arr, int size) {
-  //    memset(arr, 0, size);
   for (int i = 0; i < size; ++i) {
 #pragma HLS pipeline ii = 1
     *(arr + i) = (char)0;
@@ -124,42 +114,32 @@ void GetKV(const unsigned char *data, uint64_t *cur_offset, bool valid,
            uint32_t &value_size) {
   data += *cur_offset;
 
-  unsigned char record_header_buf[kRecordHeaderSize];
-  //  memcpy(record_header_buf, data, kRecordHeaderSize);
-  for (int i = 0; i < kRecordHeaderSize; ++i) {
-#pragma HLS pipeline ii = 1
-    record_header_buf[i] = *(data + i);
-  }
-  uint32_t crc = 0, record_size = 0;
-  DecodeFixed32(record_header_buf, &crc);
+  //  unsigned char record_header_buf[kRecordHeaderSize];
+  //  for (int i = 0; i < kRecordHeaderSize; ++i) {
+  // #pragma HLS pipeline ii = 1
+  //    record_header_buf[i] = *(data + i);
+  //  }
+  //  uint32_t crc = 0, record_size = 0;
+  //  DecodeFixed32(record_header_buf, &crc);
+  //  DecodeFixed32(record_header_buf + 4, &record_size);
 
-  DecodeFixed32(record_header_buf + 4, &record_size);
-
-  unsigned char compression = *(record_header_buf + 8);
-  //  compression not supported
-  // todo assert not supported
-  //  assert(compression == 0);
-
+  //  unsigned char compression = *(record_header_buf + 8);
   //  uint32_t crc_compute =
   //      Crc32c(0, data + 4, kRecordHeaderSize - 4 + record_size);
-  //  assert(crc_compute == crc);
+
   data += kRecordHeaderSize;
   *cur_offset += kRecordHeaderSize;
 
-  uint64_t varint_offset = 0;
+  uint64_t key_offset = 0, value_offset = 0;
   if (valid) {
-    DecodeVarint32AndValue(data, key, key_size, varint_offset);
-    DecodeVarint32AndValue(data + varint_offset, value, value_size,
-                           varint_offset);
+    DecodeVarint32AndValue(data, key, key_size, key_offset);
+    DecodeVarint32AndValue(data + key_offset, value, value_size, value_offset);
   } else {
-    DecodeVarint32(data, data + 5, key_size, varint_offset);
-    DecodeVarint32(data + varint_offset + key_size,
-                   data + varint_offset + key_size + 5, value_size,
-                   varint_offset);
-    varint_offset += key_size + value_size;
+    DecodeVarint32(data, data + 5, key_size, key_offset);
+    DecodeVarint32(data + key_offset, data + key_offset + 5, value_size,
+                   value_offset);
   }
-
-  *cur_offset += varint_offset;
+  *cur_offset += key_offset + value_offset;
 }
 
 void PutOutputData(unsigned char *data, unsigned char *key, uint32_t key_size,
@@ -172,9 +152,8 @@ void PutOutputData(unsigned char *data, unsigned char *key, uint32_t key_size,
                          value_size, value_offset);
   EncodeFixed32(data + 4, key_offset + value_offset);
   *(data + 8) = 0;
-  uint32_t crc = 1;
-  //      Crc32c(0, data + 4, kRecordHeaderSize - 4 + key_offset +
-  //      value_offset);
+  uint32_t crc;
+  Crc32c(0, data + 4, kRecordHeaderSize - 4 + key_offset + value_offset, &crc);
   EncodeFixed32(data, crc);
   *cur_offset += kRecordHeaderSize + key_offset + value_offset;
 }
@@ -184,7 +163,6 @@ void PutOutputKey(unsigned char *data, unsigned char *key, uint32_t key_size,
   data += *cur_offset;
   uint64_t offset = 0;
   EncodeVarint32(data, key_size, offset);
-  //  memcpy(data + offset, key, key_size);
   for (int i = 0; i < key_size; ++i) {
 #pragma HLS pipeline ii = 1
     data[offset + i] = key[i];
