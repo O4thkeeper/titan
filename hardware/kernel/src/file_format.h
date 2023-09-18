@@ -136,8 +136,10 @@ void GetKV(const unsigned char *data, uint64_t *cur_offset, bool valid,
     DecodeVarint32AndValue(data + key_offset, value, value_size, value_offset);
   } else {
     DecodeVarint32(data, data + 5, key_size, key_offset);
+    key_offset += key_size;
     DecodeVarint32(data + key_offset, data + key_offset + 5, value_size,
                    value_offset);
+    value_offset += value_size;
   }
   *cur_offset += key_offset + value_offset;
 }

@@ -78,8 +78,10 @@ void GCDriver::run_gc_kernel(
                      *m_context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,
                      input_files_size, &inExt, &err))
   uint64_t input_offset = 0;
-  uint64_t file_sizes[MAX_INPUT_LENGTH];
-  uint64_t num_entries[MAX_INPUT_LENGTH];
+  std::vector<uint64_t, aligned_allocator<uint64_t>> file_sizes(
+      MAX_INPUT_LENGTH, 0);
+  std::vector<uint64_t, aligned_allocator<uint64_t>> num_entries(
+      MAX_INPUT_LENGTH, 0);
   for (size_t i = 0; i < input_size; ++i) {
     int fd_p2p_in = open(input_filenames[i].c_str(), O_RDWR | O_DIRECT);
     uint64_t size = get_file_size(input_filenames[i].c_str());
@@ -152,23 +154,24 @@ void GCDriver::run_gc_kernel(
                 MAX_DATA_SIZE * sizeof(unsigned char), output_key_tmp, &err))
 
   // Device buffer allocation for output meta
-  auto output_meta_tmp =
-      (uint64_t*)aligned_alloc(32, OUTPUT_META_SIZE * sizeof(uint64_t));
-  memset(output_meta_tmp, 0, OUTPUT_META_SIZE * sizeof(uint64_t));
-  OCL_CHECK(err,
-            bufOutputMeta = new cl::Buffer(
-                *m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY,
-                OUTPUT_META_SIZE * sizeof(uint64_t), output_meta_tmp, &err))
+  std::vector<uint64_t, aligned_allocator<uint64_t>> output_meta_tmp(
+      OUTPUT_META_SIZE, 0);
+  OCL_CHECK(err, bufOutputMeta = new cl::Buffer(
+                     *m_context, CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY,
+                     OUTPUT_META_SIZE * sizeof(uint64_t),
+                     output_meta_tmp.data(), &err))
 
   // Device buffer allocation for input length
-  OCL_CHECK(err, bufIntputLength = new cl::Buffer(
-                     *m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
-                     MAX_INPUT_LENGTH * sizeof(uint64_t), file_sizes, &err))
+  OCL_CHECK(err,
+            bufIntputLength = new cl::Buffer(
+                *m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
+                MAX_INPUT_LENGTH * sizeof(uint64_t), file_sizes.data(), &err))
 
   // Device buffer allocation for input entry num
-  OCL_CHECK(err, bufIntputEntries = new cl::Buffer(
-                     *m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
-                     MAX_INPUT_LENGTH * sizeof(uint64_t), num_entries, &err))
+  OCL_CHECK(err,
+            bufIntputEntries = new cl::Buffer(
+                *m_context, CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY,
+                MAX_INPUT_LENGTH * sizeof(uint64_t), num_entries.data(), &err))
 
   m_q->enqueueMigrateMemObjects(
       {*bufInputBitmaps, *bufIntputLength, *bufIntputEntries},
@@ -204,7 +207,7 @@ void GCDriver::run_gc_kernel(
             << "s" << std::endl;
 
   int fd_p2p_out =
-      open(output_filename.c_str(), O_CREAT | O_WRONLY | O_DIRECT, 0777);
+      open(output_filename.c_str(), O_CREAT | O_RDWR | O_DIRECT, 0777);
   if (fd_p2p_out <= 0) {
     std::cout << "P2P: Unable to open output file, exited!, ret: " << fd_p2p_out
               << std::endl;
@@ -222,6 +225,7 @@ void GCDriver::run_gc_kernel(
   auto p2p_write_end = std::chrono::duration_cast<std::chrono::seconds>(
       std::chrono::system_clock::now() - p2p_write_start);
   std::cout << "INFO: Successfully transfer data(byte): " << ret
+            << ", key num: " << output_meta_tmp[0]
             << ", time(s): " << p2p_write_end.count() << std::endl;
   close(fd_p2p_out);
 
@@ -231,7 +235,6 @@ void GCDriver::run_gc_kernel(
   }
 
   delete output_key_tmp;
-  delete output_meta_tmp;
 }
 
 std::pair<std::string, uint64_t> GCDriver::GetOutputKey(unsigned char* data,

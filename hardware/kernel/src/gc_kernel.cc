@@ -31,6 +31,7 @@ void gcKernel(const unsigned char (*input_datas)[MAX_DATA_SIZE],
   uint64_t cur_output_key_offset = 0;
   uint64_t* p_cur_output_data_offset = &cur_output_data_offset;
   uint64_t* p_cur_output_key_offset = &cur_output_key_offset;
+  uint64_t rewrite_key_num = 0;
   xf::gc::EncodeHeader(output_data, p_cur_output_data_offset);
 
   for (uint64_t i = 0; i < size; ++i) {
@@ -61,13 +62,14 @@ void gcKernel(const unsigned char (*input_datas)[MAX_DATA_SIZE],
                              *p_cur_output_data_offset);
         xf::gc::PutOutputData(output_data, key, key_length, value, value_length,
                               p_cur_output_data_offset);
-        output_meta[0]++;
+        rewrite_key_num++;
       }
     }
 
     xf::gc::DecodeFooter(input_data, lengths[i]);
   }
   xf::gc::EncodeFooter(output_data, p_cur_output_data_offset);
+  output_meta[0] = rewrite_key_num;
   output_meta[1] = *p_cur_output_data_offset;
   output_meta[2] = *p_cur_output_key_offset;
   //  todo more file meta: size, entries, level, smallest/largest key
