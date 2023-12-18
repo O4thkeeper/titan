@@ -41,6 +41,9 @@ class BitMap {
   //  Status BitCount(int *result);
 
  private:
+  friend class BlobGCJob;
+  friend class HardwareGCDriver;
+
   size_t valid_bits_;
   size_t byte_size_;
   unsigned char* bits_;

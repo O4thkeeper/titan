@@ -33,6 +33,7 @@ class BlobGCJobTest : public testing::Test {
   port::Mutex* mutex_;
 
   BlobGCJobTest() : dbname_(test::TmpDir()) {
+    dbname_ = "/home/SmartSSD_data/hfeng/titan_test";
     options_.dirname = dbname_ + "/titandb";
     options_.create_if_missing = true;
     options_.disable_background_gc = true;
@@ -159,10 +160,10 @@ class BlobGCJobTest : public testing::Test {
     if (blob_gc) {
       blob_gc->SetColumnFamily(cfh);
 
-      BlobGCJob blob_gc_job(blob_gc.get(), base_db_, mutex_, tdb_->db_options_,
-                            tdb_->env_, EnvOptions(options_),
-                            tdb_->blob_manager_.get(), blob_file_set_,
-                            &log_buffer, nullptr, nullptr);
+      BlobGCJob blob_gc_job(
+          blob_gc.get(), base_db_, mutex_, tdb_->db_options_, tdb_->env_,
+          EnvOptions(options_), tdb_->blob_manager_.get(), blob_file_set_,
+          &log_buffer, nullptr, nullptr, tdb_->hardware_gc_driver_);
 
       s = blob_gc_job.Prepare();
       ASSERT_OK(s);
@@ -189,6 +190,7 @@ class BlobGCJobTest : public testing::Test {
   }
 
   Status NewIterator(uint64_t file_number, uint64_t file_size,
+                     uint64_t file_entries,
                      std::unique_ptr<BlobFileIterator>* iter) {
     std::unique_ptr<RandomAccessFileReader> file;
     Status s = NewBlobFileReader(file_number, 0, tdb_->db_options_,
@@ -197,7 +199,7 @@ class BlobGCJobTest : public testing::Test {
       return s;
     }
     iter->reset(new BlobFileIterator(std::move(file), file_number, file_size,
-                                     TitanCFOptions()));
+                                     TitanCFOptions(), file_entries));
     return Status::OK();
   }
 
@@ -247,20 +249,22 @@ class BlobGCJobTest : public testing::Test {
     auto old = b->files_.begin()->first;
     std::unique_ptr<BlobFileIterator> iter;
     ASSERT_OK(NewIterator(b->files_.begin()->second->file_number(),
-                          b->files_.begin()->second->file_size(), &iter));
+                          b->files_.begin()->second->file_size(),
+                          b->files_.begin()->second->file_entries(), &iter));
     iter->SeekToFirst();
-//    for (int i = 0; i < MAX_KEY_NUM; i++, iter->Next()) {
-//      ASSERT_OK(iter->status());
-//      ASSERT_TRUE(iter->Valid());
-//      ASSERT_TRUE(iter->key().compare(Slice(GenKey(i))) == 0);
-//    }
+    //    for (int i = 0; i < MAX_KEY_NUM; i++, iter->Next()) {
+    //      ASSERT_OK(iter->status());
+    //      ASSERT_TRUE(iter->Valid());
+    //      ASSERT_TRUE(iter->key().compare(Slice(GenKey(i))) == 0);
+    //    }
     RunGC(true, false, use_bitmap);
     b = GetBlobStorage(base_db_->DefaultColumnFamily()->GetID()).lock();
     ASSERT_EQ(b->files_.size(), 1);
     auto new1 = b->files_.begin()->first;
     ASSERT_TRUE(old != new1);
     ASSERT_OK(NewIterator(b->files_.begin()->second->file_number(),
-                          b->files_.begin()->second->file_size(), &iter));
+                          b->files_.begin()->second->file_size(),
+                          b->files_.begin()->second->file_entries(), &iter));
     iter->SeekToFirst();
     auto* db_iter = db_->NewIterator(ReadOptions(), db_->DefaultColumnFamily());
     db_iter->SeekToFirst();
@@ -416,6 +420,15 @@ TEST_F(BlobGCJobTest, RunGCWithBitMap) {
 
 TEST_F(BlobGCJobTest, ReopenWithBitMap) {
   // todo Bitmap persistent
+}
+
+TEST_F(BlobGCJobTest, RunGCWithHardware) {
+  options_.use_bitmap = true;
+  options_.gc_offload = true;
+  options_.binary_file_path =
+      "/home/hfeng/code/titan/cmake-build-debug-node27/hardware/kernel/hw/"
+      "gc.xclbin";
+  TestRunGC(true);
 }
 
 // Tests blob file will be kept after GC, if it is still visible by active

@@ -166,6 +166,12 @@ struct TitanCFOptions : public ColumnFamilyOptions {
   // degree of accuracy.
   bool use_bitmap{false};
 
+  // If set true, gc operations will be offloaded to SmartSSD.
+  // assert use_bitmap==true.
+  bool gc_offload{false};
+
+  std::string binary_file_path;
+
   TitanCFOptions() = default;
   explicit TitanCFOptions(const ColumnFamilyOptions& options)
       : ColumnFamilyOptions(options) {}
@@ -194,7 +200,9 @@ struct ImmutableTitanCFOptions {
         merge_small_file_threshold(opts.merge_small_file_threshold),
         level_merge(opts.level_merge),
         skip_value_in_compaction_filter(opts.skip_value_in_compaction_filter),
-        use_bitmap(opts.use_bitmap) {}
+        use_bitmap(opts.use_bitmap),
+        gc_offload(opts.gc_offload),
+        binary_file_path(opts.binary_file_path) {}
 
   uint64_t min_blob_size;
 
@@ -217,6 +225,10 @@ struct ImmutableTitanCFOptions {
   bool skip_value_in_compaction_filter;
 
   bool use_bitmap;
+
+  bool gc_offload;
+
+  std::string binary_file_path;
 };
 
 struct MutableTitanCFOptions {

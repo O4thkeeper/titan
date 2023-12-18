@@ -1,5 +1,7 @@
 #include "blob_file_iterator.h"
 
+#include <utility>
+
 #include "blob_file_reader.h"
 #include "table/block_based/block_based_table_reader.h"
 #include "util.h"
@@ -10,11 +12,12 @@ namespace titandb {
 
 BlobFileIterator::BlobFileIterator(
     std::unique_ptr<RandomAccessFileReader>&& file, uint64_t file_name,
-    uint64_t file_size, const TitanCFOptions& titan_cf_options)
+    uint64_t file_size, TitanCFOptions titan_cf_options, uint64_t file_entries)
     : file_(std::move(file)),
       file_number_(file_name),
       file_size_(file_size),
-      titan_cf_options_(titan_cf_options) {}
+      file_entries_(file_entries),
+      titan_cf_options_(std::move(titan_cf_options)) {}
 
 bool BlobFileIterator::Init() {
   Slice slice;
@@ -162,7 +165,8 @@ void BlobFileIterator::GetBlobRecord() {
 }
 
 void BlobFileIterator::PrefetchAndGet() {
-  if (iterate_offset_ >= end_of_blob_record_) {
+  if (iterate_offset_ >= end_of_blob_record_ ||
+      iterate_index_ >= file_entries_) {
     valid_ = false;
     return;
   }

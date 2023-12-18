@@ -73,13 +73,14 @@ void BlobFileBuilder::Add(const BlobRecord& record,
 
   // The keys added into blob files are in order.
   // We do key range checks for both state
-  if (smallest_key_.empty()) {
+  if (smallest_key_.empty() ||
+      cf_options_.comparator->Compare(record.key, Slice(smallest_key_)) < 0) {
     smallest_key_.assign(record.key.data(), record.key.size());
   }
-  assert(cf_options_.comparator->Compare(record.key, Slice(smallest_key_)) >=
-         0);
-  assert(cf_options_.comparator->Compare(record.key, Slice(largest_key_)) >= 0);
-  largest_key_.assign(record.key.data(), record.key.size());
+  if (largest_key_.empty() ||
+      cf_options_.comparator->Compare(record.key, Slice(largest_key_)) > 0) {
+    largest_key_.assign(record.key.data(), record.key.size());
+  }
 }
 
 void BlobFileBuilder::AddSmall(std::unique_ptr<BlobRecordContext> ctx) {

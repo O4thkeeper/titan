@@ -161,7 +161,9 @@ void PutOutputData(unsigned char *data, unsigned char *key, uint32_t key_size,
 }
 
 void PutOutputKey(unsigned char *data, unsigned char *key, uint32_t key_size,
-                  uint64_t *cur_offset, uint64_t value_offset) {
+                  uint64_t *cur_offset, uint64_t new_data_offset,
+                  uint64_t original_file, uint64_t original_data_offset,
+                  uint64_t entry_size) {
   data += *cur_offset;
   uint64_t offset = 0;
   EncodeVarint32(data, key_size, offset);
@@ -169,8 +171,11 @@ void PutOutputKey(unsigned char *data, unsigned char *key, uint32_t key_size,
 #pragma HLS pipeline ii = 1
     data[offset + i] = key[i];
   }
-  EncodeFixed64(data + offset + key_size, value_offset);
-  *cur_offset += offset + key_size + 8;
+  EncodeFixed32(data + offset + key_size, new_data_offset);
+  EncodeFixed32(data + offset + key_size + 4, original_file);
+  EncodeFixed32(data + offset + key_size + 8, original_data_offset);
+  EncodeFixed32(data + offset + key_size + 12, entry_size);
+  *cur_offset += offset + key_size + 16;
 }
 
 }  // namespace gc

@@ -6,6 +6,7 @@
 #include <cinttypes>
 #include <memory>
 
+#include "db_impl.h"
 #include "titan_logging.h"
 
 namespace rocksdb {
@@ -120,7 +121,9 @@ BlobGCJob::BlobGCJob(BlobGC* blob_gc, DB* db, port::Mutex* mutex,
                      const EnvOptions& env_options,
                      BlobFileManager* blob_file_manager,
                      BlobFileSet* blob_file_set, LogBuffer* log_buffer,
-                     std::atomic_bool* shuting_down, TitanStats* stats)
+                     std::atomic_bool* shuting_down, TitanStats* stats,
+                     port::Mutex* gc_mutex,
+                     std::shared_ptr<HardwareGCDriver> hardware_gc_driver)
     : blob_gc_(blob_gc),
       base_db_(db),
       base_db_impl_(reinterpret_cast<DBImpl*>(base_db_)),
@@ -133,7 +136,10 @@ BlobGCJob::BlobGCJob(BlobGC* blob_gc, DB* db, port::Mutex* mutex,
       log_buffer_(log_buffer),
       shuting_down_(shuting_down),
       stats_(stats),
-      use_bitmap_(blob_gc->titan_cf_options().use_bitmap) {}
+      use_bitmap_(blob_gc->titan_cf_options().use_bitmap),
+      gc_offload_(hardware_gc_driver != nullptr),
+      hardware_gc_driver_(hardware_gc_driver),
+      gc_mutex_(gc_mutex) {}
 
 BlobGCJob::~BlobGCJob() {
   if (log_buffer_) {
@@ -177,6 +183,10 @@ Status BlobGCJob::Run() {
   TITAN_LOG_BUFFER(log_buffer_, "[%s] Titan GC candidates[%s]",
                    blob_gc_->column_family_handle()->GetName().c_str(),
                    tmp.c_str());
+
+  if (gc_offload_) {
+    return DoRunGCOnHardware();
+  }
   return DoRunGC();
 }
 
@@ -255,7 +265,7 @@ Status BlobGCJob::DoRunGC() {
     }
     // should consider all kvs with the same key when using bitmap
     // because the iter compares keys without snap.
-    if (!use_bitmap_){
+    if (!use_bitmap_) {
       last_key_is_fresh = true;
     }
 
@@ -345,6 +355,118 @@ Status BlobGCJob::DoRunGC() {
   return s;
 }
 
+Status BlobGCJob::DoRunGCOnHardware() {
+  Status s;
+  uint8_t cu_index;
+  s = hardware_gc_driver_->get_free_cu_index(cu_index);
+  if (!s.ok()) {
+    gc_offload_ = false;
+    return DoRunGC();
+  }
+
+  const auto& inputs = blob_gc_->inputs();
+  assert(!inputs.empty());
+  std::vector<std::string> input_filenames;
+  std::vector<std::unique_ptr<BitMap>> bitmaps;
+  std::vector<std::uint64_t> input_entries;
+  mutex_->Lock();
+  auto cf_id = blob_gc_->column_family_handle()->GetID();
+  auto bs = blob_file_set_->GetBlobStorage(cf_id).lock();
+  if (!bs) {
+    TITAN_LOG_ERROR(db_options_.info_log,
+                    "BlobGC::BuildIterator: Column family id:%" PRIu32
+                    " not Found.",
+                    cf_id);
+    return Status::NotFound("BlobGC::BuildIterator: Column family not Found.");
+  }
+  for (const auto& input : inputs) {
+    auto file_number = input->file_number();
+    auto file_name = BlobFileName(db_options_.dirname, file_number);
+    input_filenames.push_back(file_name);
+
+    auto file = bs->FindFile(file_number).lock();
+    if (file == nullptr || file->is_obsolete()) {
+      TITAN_LOG_ERROR(db_options_.info_log,
+                      "BlobGC::BuildIterator: File id:%" PRIu64 " not Found.",
+                      file_number);
+      return Status::NotFound("BlobGC::BuildIterator: File not Found.");
+    }
+    std::unique_ptr<BitMap> bitMap(new BitMap());
+    s = file->CopyInvalidEntryIndexesTo(bitMap.get());
+    assert(s.ok());
+    bitmaps.push_back(std::move(bitMap));
+
+    input_entries.push_back(file->file_entries());
+  }
+  mutex_->Unlock();
+
+  auto output_number = blob_file_set_->NewFileNumber();
+  auto output_filename = BlobFileName(db_options_.dirname, output_number);
+
+  std::vector<std::pair<std::string, std::vector<uint32_t>>> rewrite_keys;
+  std::vector<uint64_t> hardware_statistics;
+  std::vector<uint64_t> output_meta;
+
+  hardware_gc_driver_->run_gc_kernel(input_filenames, output_filename, bitmaps,
+                                     input_entries, cu_index, &rewrite_keys,
+                                     hardware_statistics, output_meta);
+
+  hardware_gc_driver_->set_free_cu_index(cu_index);
+
+  auto* cfh = blob_gc_->column_family_handle();
+  std::string smallest_key;
+  std::string largest_key;
+  auto cf_options = blob_gc_->titan_cf_options();
+  for (size_t i = 0; i < rewrite_keys.size(); ++i) {
+    auto key = rewrite_keys[i].first;
+    if (smallest_key.empty()) {
+      smallest_key.assign(key);
+      largest_key.assign(key);
+    }
+    if (cf_options.comparator->Compare(key, smallest_key) < 0) {
+      smallest_key.assign(key);
+    }
+    if (cf_options.comparator->Compare(key, largest_key) > 0) {
+      largest_key.assign(key);
+    }
+    auto index_meta = rewrite_keys[i].second;
+    BlobIndex new_blob_index, origin_blob_index;
+    new_blob_index.file_number = output_number;
+    new_blob_index.blob_handle.offset = index_meta[0];
+    new_blob_index.blob_handle.size = index_meta[3];
+    new_blob_index.blob_handle.index = i;
+    origin_blob_index.file_number = inputs[index_meta[1]]->file_number();
+    origin_blob_index.blob_handle.offset = index_meta[2];
+    origin_blob_index.blob_handle.size = index_meta[3];
+
+    std::string index_entry;
+    new_blob_index.EncodeTo(&index_entry);
+    GarbageCollectionWriteCallback callback(cfh, std::string(key),
+                                            origin_blob_index, new_blob_index);
+    rewrite_batches_.emplace_back(WriteBatch(), std::move(callback));
+    auto& wb = rewrite_batches_.back().first;
+    s = WriteBatchInternal::PutBlobIndex(&wb, cfh->GetID(), key, index_entry);
+
+    if (!s.ok()) {
+      return s;
+    }
+  }
+
+  hardware_blob_file_ = std::make_shared<BlobFileMeta>(
+      output_number, output_meta[1], output_meta[0], 0, smallest_key,
+      largest_key);
+  hardware_blob_file_->set_live_data_size(output_meta[1]);
+  hardware_blob_file_->FileStateTransit(BlobFileMeta::FileEvent::kGCOutput);
+
+  auto* p_hm = reinterpret_cast<uint64_t*>(&hardware_metrics_);
+  for (size_t i = 0; i < sizeof(hardware_metrics_) / sizeof(uint64_t); ++i) {
+    *p_hm = hardware_statistics[i];
+    p_hm++;
+  }
+
+  return s;
+}
+
 void BlobGCJob::BatchWriteNewIndices(BlobFileBuilder::OutContexts& contexts,
                                      Status* s) {
   auto* cfh = blob_gc_->column_family_handle();
@@ -380,17 +502,17 @@ Status BlobGCJob::BuildIterator(
   const auto& inputs = blob_gc_->inputs();
   assert(!inputs.empty());
   std::vector<std::unique_ptr<BlobFileIterator>> list;
-  for (std::size_t i = 0; i < inputs.size(); ++i) {
+  for (const auto& input : inputs) {
     std::unique_ptr<RandomAccessFileReader> file;
     // TODO(@DorianZheng) set read ahead size
-    s = NewBlobFileReader(inputs[i]->file_number(), 0, db_options_,
-                          env_options_, env_, &file);
+    s = NewBlobFileReader(input->file_number(), 0, db_options_, env_options_,
+                          env_, &file);
     if (!s.ok()) {
       break;
     }
-    list.emplace_back(std::unique_ptr<BlobFileIterator>(new BlobFileIterator(
-        std::move(file), inputs[i]->file_number(), inputs[i]->file_size(),
-        blob_gc_->titan_cf_options())));
+    list.emplace_back(std::make_unique<BlobFileIterator>(
+        std::move(file), input->file_number(), input->file_size(),
+        blob_gc_->titan_cf_options()));
   }
   if (use_bitmap_) {
     mutex_->Lock();
@@ -468,7 +590,11 @@ Status BlobGCJob::Finish() {
   Status s;
   {
     mutex_->Unlock();
-    s = InstallOutputBlobFiles();
+    if (!gc_offload_) {
+      s = InstallOutputBlobFiles();
+    } else {
+      s = InstallHardwareOutputBlobFiles();
+    }
     if (s.ok()) {
       TEST_SYNC_POINT("BlobGCJob::Finish::BeforeRewriteValidKeyToLSM");
       s = RewriteValidKeyToLSM();
@@ -569,6 +695,62 @@ Status BlobGCJob::InstallOutputBlobFiles() {
   return s;
 }
 
+Status BlobGCJob::InstallHardwareOutputBlobFiles() {
+  TitanStopWatch w(env_, metrics_.gc_write_blob_micros);
+  Status s;
+  std::vector<std::shared_ptr<BlobFileMeta>> files;
+  std::string tmp;
+
+  {
+    metrics_.gc_num_new_files++;
+    assert(hardware_blob_file_);
+    RecordInHistogram(statistics(stats_), TITAN_GC_OUTPUT_FILE_SIZE,
+                      hardware_blob_file_->file_size());
+    if (!tmp.empty()) {
+      tmp.append(" ");
+    }
+    tmp.append(std::to_string(hardware_blob_file_->file_number()));
+    files.push_back(hardware_blob_file_);
+  }
+  if (s.ok()) {
+    TITAN_LOG_BUFFER(log_buffer_, "[%s] output[%s]",
+                     blob_gc_->column_family_handle()->GetName().c_str(),
+                     tmp.c_str());
+    VersionEdit edit;
+    edit.SetColumnFamilyID(blob_gc_->column_family_handle()->GetID());
+    edit.AddBlobFile(hardware_blob_file_);
+    {
+      MutexLock l(mutex_);
+      s = blob_file_set_->LogAndApply(edit);
+      assert(s.ok());
+    }
+
+    for (auto& file : files) {
+      blob_gc_->AddOutputFile(file.get());
+    }
+  } else {
+    std::string to_delete_files =
+        std::to_string(hardware_blob_file_->file_number());
+    TITAN_LOG_BUFFER(log_buffer_,
+                     "[%s] InstallOutputBlobFiles failed. Delete GC output "
+                     "files: %s",
+                     blob_gc_->column_family_handle()->GetName().c_str(),
+                     to_delete_files.c_str());
+    // Do not set status `s` here, cause it may override the non-okay-status
+    // of `s` so that in the outer funcation it will rewrite blob indexes to
+    // LSM by mistake.
+    Status status = env_->DeleteFile(
+        BlobFileName(db_options_.dirname, hardware_blob_file_->file_number()));
+    if (!status.ok()) {
+      TITAN_LOG_WARN(db_options_.info_log,
+                     "Delete GC output files[%s] failed: %s",
+                     to_delete_files.c_str(), status.ToString().c_str());
+    }
+  }
+
+  return s;
+}
+
 Status BlobGCJob::RewriteValidKeyToLSM() {
   Status s;
   auto* db_impl = reinterpret_cast<DBImpl*>(base_db_);
@@ -582,6 +764,10 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
   std::unordered_map<uint64_t, std::vector<uint64_t>> dropped_index;
   {
     TitanStopWatch sw(env_, metrics_.gc_update_lsm_micros);
+    bool rewrite_lock = gc_offload_ || use_bitmap_;
+    if (rewrite_lock) {
+      gc_mutex_->Lock();
+    }
     for (auto& write_batch : rewrite_batches_) {
       if (blob_gc_->GetColumnFamilyData()->IsDropped()) {
         s = Status::Aborted("Column family drop");
@@ -591,7 +777,8 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
         s = Status::ShutdownInProgress();
         break;
       }
-      s = db_impl->WriteWithCallback(wo, &write_batch.first, &write_batch.second);
+      s = db_impl->WriteWithCallback(wo, &write_batch.first,
+                                     &write_batch.second);
       metrics_.gc_num_write_back++;
       const auto& new_blob_index = write_batch.second.new_blob_index();
       if (s.ok()) {
@@ -624,6 +811,9 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
       }
       // count read bytes in write callback
       metrics_.gc_bytes_read += write_batch.second.read_bytes();
+    }
+    if (rewrite_lock) {
+      gc_mutex_->Unlock();
     }
   }
   if (s.IsBusy()) {
@@ -752,6 +942,12 @@ void BlobGCJob::get_gc_metrics(std::vector<uint64_t>* result) const {
   result->push_back(metrics_.gc_num_read_lsm);
   result->push_back(metrics_.gc_num_read_blob);
   result->push_back(metrics_.gc_num_write_back);
+
+  result->push_back(hardware_metrics_.hardware_gc_bytes_read);
+  result->push_back(hardware_metrics_.hardware_gc_read_blob_micros);
+  result->push_back(hardware_metrics_.hardware_gc_kernel_micros);
+  result->push_back(hardware_metrics_.hardware_gc_bytes_written);
+  result->push_back(hardware_metrics_.hardware_gc_write_blob_micros);
 }
 
 }  // namespace titandb

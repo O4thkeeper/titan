@@ -4,6 +4,7 @@
 #include "blob_file_set.h"
 #include "blob_validation_check.h"
 #include "db/db_impl/db_impl.h"
+#include "hadware_gc_driver.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/threadpool.h"
 #include "table_factory.h"
@@ -341,6 +342,9 @@ class TitanDBImpl : public TitanDB {
   std::unique_ptr<BlobFileSet> blob_file_set_;
   std::set<uint64_t> pending_outputs_;
   std::shared_ptr<BlobFileManager> blob_manager_;
+
+  std::shared_ptr<HardwareGCDriver> hardware_gc_driver_;
+  mutable port::Mutex gc_mutex_;
 
   // gc_queue_ hold column families that we need to gc.
   // pending_gc_ hold column families that already on gc_queue_.

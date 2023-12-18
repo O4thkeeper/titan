@@ -27,20 +27,22 @@ class GCDriver {
       const std::vector<std::string>& input_filenames,
       const std::string& output_filename,
       const std::vector<std::pair<size_t, unsigned char*>>& bitmaps,
-      const std::vector<std::uint64_t>& input_entries,
-      uint8_t cu_index,
-      std::vector<std::pair<std::string, uint64_t>>* rewrite_keys);
+      const std::vector<std::uint64_t>& input_entries, uint8_t cu_index,
+      std::vector<std::pair<std::string, std::vector<uint32_t>>>* rewrite_keys,
+      std::vector<uint64_t>& output_meta);
 
  private:
   cl::Program* m_program;
   cl::Context* m_context;
   cl::CommandQueue* m_q;
 
-  std::vector<std::string> gc_kernel_names = {"gcKernel:{gcKernel_1}",
-                                              "gcKernel:{gcKernel_2}"};
+  std::vector<std::string> gc_kernel_names = {
+      "gcKernel:{gcKernel_1}", "gcKernel:{gcKernel_2}", "gcKernel:{gcKernel_3}",
+      "gcKernel:{gcKernel_4}", "gcKernel:{gcKernel_5}", "gcKernel:{gcKernel_6}",
+      "gcKernel:{gcKernel_7}", "gcKernel:{gcKernel_8}"};
 
-  std::pair<std::string, uint64_t> GetOutputKey(unsigned char* data,
-                                                uint64_t* cur_offset);
+  std::pair<std::string, std::vector<uint32_t>> GetOutputKey(
+      unsigned char* data, uint64_t* cur_offset);
   static bool DecodeVarint32(const unsigned char* p, uint32_t& value,
                              uint64_t& offset) {
     uint32_t result = 0;
@@ -60,9 +62,9 @@ class GCDriver {
     }
     return false;
   }
-  static inline void DecodeFixed64(const unsigned char* input,
-                                   uint64_t* value) {
-    memcpy(value, input, sizeof(uint64_t));
+  static inline void DecodeFixed32(const unsigned char* input,
+                                   uint32_t* value) {
+    memcpy(value, input, sizeof(uint32_t));
   }
 };
 

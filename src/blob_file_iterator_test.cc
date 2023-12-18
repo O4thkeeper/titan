@@ -288,6 +288,21 @@ TEST_F(BlobFileIteratorTest, ValidateByBitMap) {
   }
 }
 
+TEST_F(BlobFileIteratorTest, GenerateBlob) {
+
+  titan_options_.min_blob_size=1024;
+  NewBuilder();
+
+  const int n = 30000;
+  BlobFileBuilder::OutContexts contexts;
+  for (int i = 0; i < n; i++) {
+    AddKeyValue(GenKey(i), GenValue(i), contexts);
+  }
+
+  FinishBuilder(contexts);
+  std::cout << dirname_ << std::endl;
+}
+
 }  // namespace titandb
 }  // namespace rocksdb
 

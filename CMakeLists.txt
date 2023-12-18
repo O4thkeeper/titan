@@ -3,6 +3,7 @@ project(titan)
 enable_language(CXX)
 enable_language(C)
 find_package(Git)
+set(CMAKE_CXX_STANDARD 14)
 
 if (NOT ROCKSDB_GIT_REPO)
   set(ROCKSDB_GIT_REPO "https://github.com/tikv/rocksdb.git")
@@ -27,6 +28,22 @@ if (NOT DEFINED ROCKSDB_DIR)
   message(FATAL_ERROR "ROCKSDB_DIR is not defined.")
 endif()
 
+option(GC_OFFLOAD "Offload gc to smartssd." ON)
+if (GC_OFFLOAD)
+  find_package(OpenCL REQUIRED)
+  set(XILINX_XRT /opt/xilinx/xrt)
+  #set(XILINX_VITIS /home/Vitis/Vitis/2021.1/)
+  set(XILINX_VITIS /home/hfeng/tool/Xilinx/Vitis/2022.2/)
+#  set(XILINX_VITIS /home/Vitis/2021.1/)
+
+  include_directories(${OpenCL_INCLUDE_DIRS})
+  include_directories(${XILINX_XRT}/include)
+  link_directories(${XILINX_XRT}/lib)
+
+  add_subdirectory(hardware/host)
+  add_subdirectory(hardware/kernel)
+endif ()
+
 get_filename_component(CMAKE_MODULE_PATH "${ROCKSDB_DIR}/cmake/modules/" ABSOLUTE)
 include(cmake/rocksdb_flags.cmake)
 
@@ -41,6 +58,11 @@ file(GLOB TEST_SOURCES src/*test.cc)
 list(REMOVE_ITEM SOURCES ${TEST_SOURCES})
 
 add_library(titan STATIC ${SOURCES} $<TARGET_OBJECTS:titan_build_version>)
+
+if (GC_OFFLOAD)
+#  target_compile_options(titan PUBLIC "$<$<CONFIG:Debug>:-O0>")
+  target_link_libraries(titan OpenCL ${OpenCL_LIBRARIES} pthread rt)
+endif ()
 
 option(WITH_TITAN_TESTS "Build with tests." ON)
 option(WITH_TITAN_TOOLS "Build with tools." ON)

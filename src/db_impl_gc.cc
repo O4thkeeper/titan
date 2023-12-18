@@ -106,7 +106,7 @@ Status TitanDBImpl::InitializeGC(
         return s;
       }
     }
-//    todo [*]init bimap storage
+    //    todo [*]init bimap storage
 
     std::shared_ptr<BlobStorage> blob_storage =
         blob_file_set_->GetBlobStorage(cf_handle->GetID()).lock();
@@ -231,12 +231,13 @@ Status TitanDBImpl::BackgroundGC(LogBuffer* log_buffer,
     // Nothing to do
     TITAN_LOG_BUFFER(log_buffer, "Titan GC nothing to do");
   } else {
+    uint64_t elapsed;
     StopWatch gc_sw(env_->GetSystemClock().get(), statistics(stats_.get()),
-                    TITAN_GC_MICROS);
+                    TITAN_GC_MICROS, &elapsed);
     BlobGCJob blob_gc_job(blob_gc.get(), db_, &mutex_, db_options_, env_,
                           env_options_, blob_manager_.get(),
                           blob_file_set_.get(), log_buffer, &shuting_down_,
-                          stats_.get());
+                          stats_.get(), &gc_mutex_, hardware_gc_driver_);
     s = blob_gc_job.Prepare();
     if (s.ok()) {
       mutex_.Unlock();

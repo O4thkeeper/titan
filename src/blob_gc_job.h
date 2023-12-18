@@ -6,6 +6,7 @@
 #include "blob_file_set.h"
 #include "blob_gc.h"
 #include "db/db_impl/db_impl.h"
+#include "hadware_gc_driver.h"
 #include "rocksdb/statistics.h"
 #include "rocksdb/status.h"
 #include "titan/options.h"
@@ -21,7 +22,9 @@ class BlobGCJob {
             const TitanDBOptions &titan_db_options, Env *env,
             const EnvOptions &env_options, BlobFileManager *blob_file_manager,
             BlobFileSet *blob_file_set, LogBuffer *log_buffer,
-            std::atomic_bool *shuting_down, TitanStats *stats);
+            std::atomic_bool *shuting_down, TitanStats *stats,
+            port::Mutex *gc_mutex,
+            std::shared_ptr<HardwareGCDriver> hardware_gc_driver = nullptr);
 
   // No copying allowed
   BlobGCJob(const BlobGCJob &) = delete;
@@ -86,12 +89,24 @@ class BlobGCJob {
     uint64_t gc_num_write_back = 0;
   } metrics_;
 
+  struct {
+    uint64_t hardware_gc_bytes_read = 0;
+    uint64_t hardware_gc_read_blob_micros = 0;
+    uint64_t hardware_gc_kernel_micros = 0;
+    uint64_t hardware_gc_bytes_written = 0;
+    uint64_t hardware_gc_write_blob_micros = 0;
+  } hardware_metrics_;
+
   uint64_t prev_bytes_read_ = 0;
   uint64_t prev_bytes_written_ = 0;
   uint64_t io_bytes_read_ = 0;
   uint64_t io_bytes_written_ = 0;
 
   bool use_bitmap_{false};
+  bool gc_offload_{false};
+  std::shared_ptr<HardwareGCDriver> hardware_gc_driver_;
+  std::shared_ptr<BlobFileMeta> hardware_blob_file_;
+  port::Mutex *gc_mutex_;
 
   Status DoRunGC();
   void BatchWriteNewIndices(BlobFileBuilder::OutContexts &contexts, Status *s);
@@ -99,8 +114,11 @@ class BlobGCJob {
   Status DiscardEntry(const Slice &key, const BlobIndex &blob_index,
                       bool *discardable);
   Status InstallOutputBlobFiles();
+  Status InstallHardwareOutputBlobFiles();
   Status RewriteValidKeyToLSM();
   Status DeleteInputBlobFiles();
+
+  Status DoRunGCOnHardware();
 
   bool IsShutingDown();
 };

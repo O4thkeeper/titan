@@ -18,27 +18,10 @@
 #define MAX_VALUE_LENGTH 8192
 #endif
 
-#ifndef MAX_INPUT_LENGTH
-#define MAX_INPUT_LENGTH 4
-#endif
-
-#ifndef MAX_DATA_SIZE
- #define MAX_DATA_SIZE (136 * 1024 * 1024)
-//#define MAX_DATA_SIZE (32 * 1024)
-#endif
-
-#ifndef MAX_INPUT_BITMAP_SIZE
-#define MAX_INPUT_BITMAP_SIZE (136 * 1024 / 8)
-#endif
-
-#ifndef PLATFORM_IS_LITTLE_ENDIAN
-#define PLATFORM_IS_LITTLE_ENDIAN (__BYTE_ORDER == __LITTLE_ENDIAN)
-#endif
-
 namespace xf {
 namespace gc {
 
-//constexpr bool kLittleEndian = PLATFORM_IS_LITTLE_ENDIAN;
+// constexpr bool kLittleEndian = PLATFORM_IS_LITTLE_ENDIAN;
 
 const uint64_t kBlobMaxHeaderSize = 12;
 const uint64_t kBlobMinHeaderSize = 8;

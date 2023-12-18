@@ -270,6 +270,12 @@ Status TitanDBImpl::OpenImpl(const std::vector<TitanCFDescriptor>& descs,
   blob_file_set_.reset(new BlobFileSet(db_options_, stats_.get()));
   // Setup options.
   db_options_.listeners.emplace_back(std::make_shared<BaseDbListener>(this));
+  // gc offloading.
+  if (descs[0].options.gc_offload) {
+    assert(descs[0].options.use_bitmap);
+    hardware_gc_driver_ = std::make_shared<HardwareGCDriver>(
+        db_options_, descs[0].options.binary_file_path, 0);
+  }
   // Descriptors for actually open DB.
   std::vector<ColumnFamilyDescriptor> base_descs;
   std::vector<std::shared_ptr<TitanTableFactory>> titan_table_factories;
