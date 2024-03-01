@@ -166,6 +166,9 @@ struct BlobIndex {
   uint64_t file_number{0};
   BlobHandle blob_handle;
 
+  uint64_t old_file_number{0};
+  BlobHandle old_blob_handle;
+
   void EncodeTo(std::string* dst) const;
   Status DecodeFrom(Slice* src);
 
@@ -234,7 +237,7 @@ class BlobFileMeta {
         file_level_(_file_level),
         smallest_key_(_smallest_key),
         largest_key_(_largest_key) {
-//    todo init when use_bitmap is set
+    //    todo init when use_bitmap is set
     invalid_entry_indexes_ = std::unique_ptr<BitMap>(new BitMap(_file_entries));
   }
 

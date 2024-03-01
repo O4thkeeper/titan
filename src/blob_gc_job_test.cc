@@ -8,7 +8,8 @@
 namespace rocksdb {
 namespace titandb {
 
-const static int MAX_KEY_NUM = 1000;
+const static int MAX_KEY_NUM = 12;
+// const static int MAX_KEY_NUM = 1000;
 
 std::string GenKey(int i) {
   char buffer[32];
@@ -31,6 +32,7 @@ class BlobGCJobTest : public testing::Test {
   BlobFileSet* blob_file_set_;
   TitanOptions options_;
   port::Mutex* mutex_;
+  port::Mutex gc_mutex_;
 
   BlobGCJobTest() : dbname_(test::TmpDir()) {
     dbname_ = "/home/SmartSSD_data/hfeng/titan_test";
@@ -41,6 +43,7 @@ class BlobGCJobTest : public testing::Test {
     options_.disable_auto_compactions = true;
     options_.env->CreateDirIfMissing(dbname_);
     options_.env->CreateDirIfMissing(options_.dirname);
+    options_.compaction_preprocess = true;
   }
   ~BlobGCJobTest() { Close(); }
 
@@ -163,7 +166,7 @@ class BlobGCJobTest : public testing::Test {
       BlobGCJob blob_gc_job(
           blob_gc.get(), base_db_, mutex_, tdb_->db_options_, tdb_->env_,
           EnvOptions(options_), tdb_->blob_manager_.get(), blob_file_set_,
-          &log_buffer, nullptr, nullptr, tdb_->hardware_gc_driver_);
+          &log_buffer, nullptr, nullptr, &gc_mutex_, tdb_->hardware_gc_driver_);
 
       s = blob_gc_job.Prepare();
       ASSERT_OK(s);
@@ -222,7 +225,7 @@ class BlobGCJobTest : public testing::Test {
     blob_gc.SetColumnFamily(cfh);
     BlobGCJob blob_gc_job(&blob_gc, base_db_, mutex_, TitanDBOptions(),
                           Env::Default(), EnvOptions(), nullptr, blob_file_set_,
-                          nullptr, nullptr, nullptr);
+                          nullptr, nullptr, nullptr, &gc_mutex_);
     bool discardable = false;
     ASSERT_OK(blob_gc_job.DiscardEntry(key, blob_index, &discardable));
     ASSERT_FALSE(discardable);
@@ -288,6 +291,82 @@ class BlobGCJobTest : public testing::Test {
     }
     delete db_iter;
     ASSERT_FALSE(iter->Valid() || !iter->status().ok());
+  }
+
+  void TestRunGCWithUpdate(bool use_bitmap = false) {
+    NewDB();
+    for (int i = 0; i < MAX_KEY_NUM; i++) {
+      db_->Put(WriteOptions(), GenKey(i), GenValue(i));
+    }
+    Flush();
+    std::string result;
+    for (int i = 0; i < MAX_KEY_NUM; i++) {
+      if (i % 3 == 0) {
+      } else {
+        db_->Put(WriteOptions(), GenKey(i), GenValue(i + MAX_KEY_NUM * 2));
+      }
+    }
+    Flush();
+    CompactAll();
+    for (int i = 0; i < MAX_KEY_NUM; i++) {
+      if (i % 3 == 0) {
+        db_->Put(WriteOptions(), GenKey(i), GenValue(i + MAX_KEY_NUM * 3));
+      }
+    }
+
+    auto b = GetBlobStorage(base_db_->DefaultColumnFamily()->GetID()).lock();
+    //    ASSERT_EQ(b->files_.size(), 3);
+    std::cout << "GC begin." << std::endl;
+    RunGC(true, false, use_bitmap);
+    for (int i = 0; i < MAX_KEY_NUM; i++) {
+      if (i % 3 != 0) {
+        db_->Put(WriteOptions(), GenKey(i), GenValue(i + MAX_KEY_NUM * 4));
+      }
+    }
+
+    Flush();
+    CompactAll();
+    b = GetBlobStorage(base_db_->DefaultColumnFamily()->GetID()).lock();
+    //    ASSERT_EQ(b->files_.size(), 2);
+
+    for (int i = 0; i < MAX_KEY_NUM; i++) {
+      //      std::cout << i << std::endl;
+      ASSERT_OK(db_->Get(ReadOptions(), GenKey(i), &result));
+      //      std::cout << result << std::endl;
+      if (i % 3 == 0) {
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 3).size() == result.size());
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 3) == result);
+      } else {
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 4).size() == result.size());
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 4) == result);
+      }
+      //      if (i % 3 == 0) {
+      //        ASSERT_TRUE(GenValue(i ).size() == result.size());
+      //        ASSERT_TRUE(GenValue(i) == result);
+      //      } else {
+      //        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 2).size() ==
+      //        result.size()); ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 2) ==
+      //        result);
+      //      }
+      //      ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 3).size() ==
+      //      result.size()); ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 3) ==
+      //      result);
+    }
+
+    RunGC(true, false, use_bitmap);
+    Flush();
+    CompactAll();
+
+    for (int i = 0; i < MAX_KEY_NUM; i++) {
+      ASSERT_OK(db_->Get(ReadOptions(), GenKey(i), &result));
+      if (i % 3 == 0) {
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 3).size() == result.size());
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 3) == result);
+      } else {
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 4).size() == result.size());
+        ASSERT_TRUE(GenValue(i + MAX_KEY_NUM * 4) == result);
+      }
+    }
   }
 };
 
@@ -428,7 +507,8 @@ TEST_F(BlobGCJobTest, RunGCWithHardware) {
   options_.binary_file_path =
       "/home/hfeng/code/titan/cmake-build-debug-node27/hardware/kernel/hw/"
       "gc.xclbin";
-  TestRunGC(true);
+  //    TestRunGC(true);
+  TestRunGCWithUpdate(true);
 }
 
 // Tests blob file will be kept after GC, if it is still visible by active

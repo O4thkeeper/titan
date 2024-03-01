@@ -172,6 +172,7 @@ void LogPropertiesCollectionError(Logger* info_log, const std::string& method,
     "Encountered error when calling TablePropertiesCollector::" +
     method + "() with collector name: " + name;
   ROCKS_LOG_ERROR(info_log, "%s", msg.c_str());
+  assert(false);
 }
 
 bool NotifyCollectTableCollectorsOnAdd(

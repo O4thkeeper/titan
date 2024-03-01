@@ -438,6 +438,9 @@ Status BlobGCJob::DoRunGCOnHardware() {
     origin_blob_index.file_number = inputs[index_meta[1]]->file_number();
     origin_blob_index.blob_handle.offset = index_meta[2];
     origin_blob_index.blob_handle.size = index_meta[3];
+    new_blob_index.old_file_number = origin_blob_index.file_number;
+    new_blob_index.old_blob_handle.offset = origin_blob_index.blob_handle.offset;
+    new_blob_index.old_blob_handle.size = origin_blob_index.blob_handle.size;
 
     std::string index_entry;
     new_blob_index.EncodeTo(&index_entry);
@@ -777,8 +780,12 @@ Status BlobGCJob::RewriteValidKeyToLSM() {
         s = Status::ShutdownInProgress();
         break;
       }
-      s = db_impl->WriteWithCallback(wo, &write_batch.first,
-                                     &write_batch.second);
+      if (gc_offload_) {
+        s = db_impl->Write(wo, &write_batch.first);
+      } else {
+        s = db_impl->WriteWithCallback(wo, &write_batch.first,
+                                       &write_batch.second);
+      }
       metrics_.gc_num_write_back++;
       const auto& new_blob_index = write_batch.second.new_blob_index();
       if (s.ok()) {

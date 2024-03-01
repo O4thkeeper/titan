@@ -1378,6 +1378,8 @@ struct DBOptions {
   //
   // Default: kNonVolatileBlockTier
   CacheTier lowest_used_cache_tier = CacheTier::kNonVolatileBlockTier;
+
+  bool compaction_preprocess = false;
 };
 
 // Options to control the behavior of a database (passed to DB::Open)

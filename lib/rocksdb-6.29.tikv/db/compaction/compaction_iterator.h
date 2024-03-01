@@ -187,7 +187,8 @@ class CompactionIterator {
       const std::atomic<int>* manual_compaction_paused = nullptr,
       const std::atomic<bool>* manual_compaction_canceled = nullptr,
       const std::shared_ptr<Logger> info_log = nullptr,
-      const std::string* full_history_ts_low = nullptr);
+      const std::string* full_history_ts_low = nullptr,
+      bool preprocess = false);
 
   // Constructor with custom CompactionProxy, used for tests.
   CompactionIterator(
@@ -205,7 +206,8 @@ class CompactionIterator {
       const std::atomic<int>* manual_compaction_paused = nullptr,
       const std::atomic<bool>* manual_compaction_canceled = nullptr,
       const std::shared_ptr<Logger> info_log = nullptr,
-      const std::string* full_history_ts_low = nullptr);
+      const std::string* full_history_ts_low = nullptr,
+      bool preprocess = false);
 
   ~CompactionIterator();
 
@@ -307,6 +309,13 @@ class CompactionIterator {
       const CompactionProxy* compaction);
   static std::unique_ptr<PrefetchBufferCollection>
   CreatePrefetchBufferCollectionIfNeeded(const CompactionProxy* compaction);
+  bool CheckBlobIndex(Slice* prev, Slice* cur, std::string* resV);
+  static bool GetChar(Slice* src, unsigned char* value) {
+    if (src->size() < 1) return false;
+    *value = *src->data();
+    src->remove_prefix(1);
+    return true;
+  }
 
   SequenceIterWrapper input_;
   const Comparator* cmp_;
@@ -374,6 +383,23 @@ class CompactionIterator {
   // If false, the iterator holds a copy of the current compaction iterator
   // output (or current key in the underlying iterator during NextFromInput()).
   bool at_next_ = false;
+
+  bool preprocess_ = {false};
+  void Preprocess();
+  void NextFromCache();
+  struct kv_type {
+    std::string key;
+    std::string value;
+    std::string user_key;
+  };
+  std::vector<kv_type> kv_queue_;
+  uint64_t kv_queue_offset{0};
+  struct blob_index_type {
+    uint64_t file_number;
+    uint64_t offset;
+    uint64_t size;
+    uint64_t index;
+  };
 
   IterKey current_key_;
   Slice current_user_key_;

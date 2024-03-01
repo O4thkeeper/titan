@@ -34,7 +34,7 @@ CompactionIterator::CompactionIterator(
     const std::atomic<int>* manual_compaction_paused,
     const std::atomic<bool>* manual_compaction_canceled,
     const std::shared_ptr<Logger> info_log,
-    const std::string* full_history_ts_low)
+    const std::string* full_history_ts_low, bool preprocess)
     : CompactionIterator(
           input, cmp, merge_helper, last_sequence, snapshots,
           earliest_write_conflict_snapshot, snapshot_checker, env,
@@ -44,7 +44,7 @@ CompactionIterator::CompactionIterator(
               compaction ? new RealCompaction(compaction) : nullptr),
           compaction_filter, shutting_down, preserve_deletes_seqnum,
           manual_compaction_paused, manual_compaction_canceled, info_log,
-          full_history_ts_low) {}
+          full_history_ts_low, preprocess) {}
 
 CompactionIterator::CompactionIterator(
     InternalIterator* input, const Comparator* cmp, MergeHelper* merge_helper,
@@ -61,7 +61,7 @@ CompactionIterator::CompactionIterator(
     const std::atomic<int>* manual_compaction_paused,
     const std::atomic<bool>* manual_compaction_canceled,
     const std::shared_ptr<Logger> info_log,
-    const std::string* full_history_ts_low)
+    const std::string* full_history_ts_low, bool preprocess)
     : input_(input, cmp,
              !compaction || compaction->DoesInputReferenceBlobFiles()),
       cmp_(cmp),
@@ -85,6 +85,7 @@ CompactionIterator::CompactionIterator(
       allow_data_in_errors_(allow_data_in_errors),
       timestamp_size_(cmp_ ? cmp_->timestamp_size() : 0),
       full_history_ts_low_(full_history_ts_low),
+      preprocess_(preprocess),
       current_user_key_sequence_(0),
       current_user_key_snapshot_(0),
       merge_out_iter_(merge_helper_),
@@ -94,8 +95,7 @@ CompactionIterator::CompactionIterator(
       prefetch_buffers_(
           CreatePrefetchBufferCollectionIfNeeded(compaction_.get())),
       current_key_committed_(false),
-      cmp_with_history_ts_low_(0),
-      level_(compaction_ == nullptr ? 0 : compaction_->level()) {
+      cmp_with_history_ts_low_(0),level_(compaction_ == nullptr ? 0 : compaction_->level()) {
   assert(snapshots_ != nullptr);
   bottommost_level_ = compaction_ == nullptr
                           ? false
@@ -143,14 +143,21 @@ void CompactionIterator::ResetRecordCounts() {
 }
 
 void CompactionIterator::SeekToFirst() {
-  NextFromInput();
+  if (preprocess_) {
+    Preprocess();
+    NextFromCache();
+  } else {
+    NextFromInput();
+  }
   PrepareOutput();
 }
 
 void CompactionIterator::Next() {
   // If there is a merge output, return it before continuing to process the
   // input.
-  if (merge_out_iter_.Valid()) {
+  if (preprocess_) {
+    NextFromCache();
+  } else if (merge_out_iter_.Valid()) {
     merge_out_iter_.Next();
 
     // Check if we returned all records of the merge output.
@@ -794,8 +801,8 @@ void CompactionIterator::NextFromInput() {
                  cmp_with_history_ts_low_ < 0)) &&
                bottommost_level_ && ikeyNotNeededForIncrementalSnapshot()) {
       // Handle the case where we have a delete key at the bottom most level
-      // We can skip outputting the key iff there are no subsequent puts for this
-      // key
+      // We can skip outputting the key iff there are no subsequent puts for
+      // this key
       assert(!compaction_ || compaction_->KeyNotExistsBeyondOutputLevel(
                                  ikey_.user_key, &level_ptrs_));
       ParsedInternalKey next_ikey;
@@ -822,8 +829,8 @@ void CompactionIterator::NextFromInput() {
               DefinitelyNotInSnapshot(next_ikey.sequence, prev_snapshot))) {
         AdvanceInputIter();
       }
-      // If you find you still need to output a row with this key, we need to output the
-      // delete too
+      // If you find you still need to output a row with this key, we need to
+      // output the delete too
       if (input_.Valid() &&
           (ParseInternalKey(input_.key(), &next_ikey, allow_data_in_errors_)
                .ok()) &&
@@ -907,6 +914,89 @@ void CompactionIterator::NextFromInput() {
 
   if (IsPausingManualCompaction()) {
     status_ = Status::Incomplete(Status::SubCode::kManualCompactionPaused);
+  }
+}
+
+void CompactionIterator::Preprocess() {
+  while (input_.Valid()) {
+    key_ = input_.key();
+    value_ = input_.value();
+    iter_stats_.num_input_records++;
+
+    Status pik_status = ParseInternalKey(key_, &ikey_, allow_data_in_errors_);
+    assert(pik_status.ok());
+    TEST_SYNC_POINT_CALLBACK("CompactionIterator:ProcessKV", &ikey_);
+
+    iter_stats_.total_input_raw_key_bytes += key_.size();
+    iter_stats_.total_input_raw_value_bytes += value_.size();
+
+    key_ = current_key_.SetInternalKey(key_, &ikey_);
+    current_user_key_ = ikey_.user_key;
+    assert(ikey_.type == kTypeValue || ikey_.type == kTypeBlobIndex);
+    if (kv_queue_.empty()) {
+      kv_type kv{key_.ToString(), value_.ToString(),
+                 current_user_key_.ToString()};
+      kv_queue_.push_back(kv);
+    } else {
+      bool user_key_equal_without_ts = cmp_->EqualWithoutTimestamp(
+          ikey_.user_key, kv_queue_.back().user_key);
+      if (user_key_equal_without_ts) {
+        auto pre_kv = kv_queue_.back();
+        ParsedInternalKey pre_ikey;
+        std::string pre_key(pre_kv.key);
+        ParseInternalKey(pre_key, &pre_ikey, allow_data_in_errors_);
+        if (pre_ikey.type == kTypeValue) {
+          // Type value means the newest version written into mem, just skip
+          // current kv is OK.
+        } else if (pre_ikey.type == kTypeBlobIndex) {
+          // check ikey_.type:
+          //      1.value(exchange);
+          //      2.blob(check if pre_ikey_ is GC written back)：
+          //          is：check if pre_ikey_.old matches current value:
+          //              is: change pre_value to normal blob_index format;
+          //              not: exchange;
+          //          not: just skip;
+          if (ikey_.type == kTypeValue) {
+            kv_queue_.pop_back();
+            kv_type kv{key_.ToString(), value_.ToString(),
+                       current_user_key_.ToString()};
+            kv_queue_.push_back(kv);
+          } else {  // ikey_.type = kTypeBlobIndex
+            std::string prev_value{kv_queue_.back().value};
+            std::string cur_value{value_.ToString()};
+            std::string res_value;
+            Slice prevS(prev_value), curS(cur_value);
+            if (CheckBlobIndex(&prevS, &curS, &res_value)) {
+              kv_type kv{kv_queue_.back().key, res_value,
+                         kv_queue_.back().user_key};
+              kv_queue_.pop_back();
+              kv_queue_.push_back(kv);
+            }  // else just skip cur kv
+          }
+        } else {
+          assert(false);
+        }
+      } else {
+        kv_type kv{key_.ToString(), value_.ToString(),
+                   current_user_key_.ToString()};
+        kv_queue_.push_back(kv);
+      }
+    }
+    AdvanceInputIter();
+  }
+  valid_ = true;
+}
+
+void CompactionIterator::NextFromCache() {
+  if (kv_queue_offset < kv_queue_.size()) {
+    key_ = kv_queue_[kv_queue_offset].key;
+    value_ = kv_queue_[kv_queue_offset].value;
+    ParseInternalKey(key_, &ikey_, allow_data_in_errors_);
+    key_ = current_key_.SetInternalKey(key_, &ikey_);
+    current_user_key_ = kv_queue_[kv_queue_offset].user_key;
+    kv_queue_offset++;
+  } else {
+    valid_ = false;
   }
 }
 
@@ -1101,8 +1191,8 @@ inline SequenceNumber CompactionIterator::findEarliestVisibleSnapshot(
     ROCKS_LOG_FATAL(info_log_,
                     "No snapshot left in findEarliestVisibleSnapshot");
   }
-  auto snapshots_iter = std::lower_bound(
-      snapshots_->begin(), snapshots_->end(), in);
+  auto snapshots_iter =
+      std::lower_bound(snapshots_->begin(), snapshots_->end(), in);
   if (snapshots_iter == snapshots_->begin()) {
     *prev_snapshot = 0;
   } else {
@@ -1114,8 +1204,8 @@ inline SequenceNumber CompactionIterator::findEarliestVisibleSnapshot(
     }
   }
   if (snapshot_checker_ == nullptr) {
-    return snapshots_iter != snapshots_->end()
-      ? *snapshots_iter : kMaxSequenceNumber;
+    return snapshots_iter != snapshots_->end() ? *snapshots_iter
+                                               : kMaxSequenceNumber;
   }
   bool has_released_snapshot = !released_snapshots_.empty();
   for (; snapshots_iter != snapshots_->end(); ++snapshots_iter) {
@@ -1208,6 +1298,54 @@ CompactionIterator::CreatePrefetchBufferCollectionIfNeeded(
 
   return std::unique_ptr<PrefetchBufferCollection>(
       new PrefetchBufferCollection(readahead_size));
+}
+
+bool CompactionIterator::CheckBlobIndex(Slice* prev, Slice* cur,
+                                        std::string* resV) {
+  unsigned char type;
+  blob_index_type prev_new{}, prev_old{};
+  if (!GetChar(prev, &type) || type != (unsigned char)1 ||
+      !GetVarint64(prev, &prev_new.file_number) ||
+      !GetVarint64(prev, &prev_new.offset) ||
+      !GetVarint64(prev, &prev_new.size) ||
+      !GetVarint64(prev, &prev_new.index)) {
+    assert(false);
+  }
+  if (!prev->empty()) {
+    if (!GetVarint64(prev, &prev_old.file_number) ||
+        !GetVarint64(prev, &prev_old.offset) ||
+        !GetVarint64(prev, &prev_old.size) ||
+        !GetVarint64(prev, &prev_old.index)) {
+      assert(false);
+    }
+  } else {
+    return false;
+  }
+
+  blob_index_type cur_new{};
+  if (!GetChar(cur, &type) || type != (unsigned char)1 ||
+      !GetVarint64(cur, &cur_new.file_number) ||
+      !GetVarint64(cur, &cur_new.offset) || !GetVarint64(cur, &cur_new.size) ||
+      !GetVarint64(cur, &cur_new.index)) {
+    assert(false);
+  }
+
+  if (prev_old.file_number == cur_new.file_number &&
+      prev_old.offset == cur_new.offset) {
+    resV->push_back((unsigned char)1);
+    PutVarint64(resV, prev_new.file_number);
+    PutVarint64(resV, prev_new.offset);
+    PutVarint64(resV, prev_new.size);
+    PutVarint64(resV, prev_new.index);
+  } else {
+    resV->push_back((unsigned char)1);
+    PutVarint64(resV, cur_new.file_number);
+    PutVarint64(resV, cur_new.offset);
+    PutVarint64(resV, cur_new.size);
+    PutVarint64(resV, cur_new.index);
+  }
+
+  return true;
 }
 
 }  // namespace ROCKSDB_NAMESPACE

@@ -106,6 +106,7 @@ struct ImmutableDBOptions {
   Statistics* stats;
   Logger* logger;
   std::shared_ptr<CompactionService> compaction_service;
+  bool compaction_preprocess;
 
   bool IsWalDirSameAsDBPath() const;
   bool IsWalDirSameAsDBPath(const std::string& path) const;

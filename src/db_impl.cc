@@ -275,6 +275,7 @@ Status TitanDBImpl::OpenImpl(const std::vector<TitanCFDescriptor>& descs,
     assert(descs[0].options.use_bitmap);
     hardware_gc_driver_ = std::make_shared<HardwareGCDriver>(
         db_options_, descs[0].options.binary_file_path, 0);
+    db_options_.compaction_preprocess = true;
   }
   // Descriptors for actually open DB.
   std::vector<ColumnFamilyDescriptor> base_descs;
