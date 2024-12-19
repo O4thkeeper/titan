@@ -1,52 +1,22 @@
-# Titan: A RocksDB Plugin to Reduce Write Amplification
+# AegonKV: A High Bandwidth, Low Tail Latency, and Low Storage Cost KV-Separated LSM Store with SmartSSD-based GC Offloading
 
-[![Build Status](https://travis-ci.org/tikv/titan.svg?branch=master)](https://travis-ci.org/tikv/titan)
-[![codecov](https://codecov.io/gh/tikv/titan/branch/master/graph/badge.svg)](https://codecov.io/gh/tikv/titan)
+## Build
+AegonKV is built on Titan.
 
-Titan is a RocksDB Plugin for key-value separation, inspired by 
-[WiscKey](https://www.usenix.org/system/files/conference/fast16/fast16-papers-lu.pdf).
-For introduction and design details, see our
-[blog post](https://pingcap.com/blog/titan-storage-engine-design-and-implementation/).
+Follow three steps to build AegonKV: build RocksDB dependency (required by Titan), build AegonKV software side target, and build AegonKV FPGA hardware side target.
 
-## Build and Test
-Titan relies on RocksDB source code to build. You need to checkout RocksDB source code locally,
-and provide the path to Titan build script.
-```
-# To build:
+*Before building hardware target, make sure the SmartSSD environment is configured correctly. Some useful test commands are in `./hardware/host/test_commands.sh`.*
+
+```shell
 mkdir -p build
 cd build
-cmake ..
-make -j<n>
+cmake -DROCKSDB_DIR=$(pwd)/../lib/rocksdb-6.29.tikv -DREAL_COMPILE=1 -DCMAKE_BUILD_TYPE=Debug ..
+# build RocksDB
+make -j rocksdb
+# build software
+make -j titan
 
-# To specify custom rocksdb
-cmake .. -DROCKSDB_DIR=<rocksdb_source_dir>
-# or
-cmake .. -DROCKSDB_GIT_REPO=<git_repo> -DROCKSDB_GIT_BRANCH=<branch>
-
-# Build static lib (i.e. libtitan.a) only:
-make titan -j<n>
-
-# Release build:
-cmake .. -DROCKSDB_DIR=<rocksdb_source_dir> -DCMAKE_BUILD_TYPE=Release
-
-# Building with sanitizer (e.g. ASAN):
-cmake .. -DROCKSDB_DIR=<rocksdb_source_dir> -DWITH_ASAN=ON
-
-# Building with compression libraries (e.g. snappy):
-cmake .. -DROCKSDB_DIR=<rocksdb_source_dir> -DWITH_SNAPPY=ON
-
-# Run tests after build. You need to filter tests by "titan" prefix.
-ctest -R titan
-
-# To format code, install clang-format and run the script.
-bash scripts/format-diff.sh
+# build hardware (it may takes several hours)
+cd ..
+nohup cmake --build $(pwd)/build --target gc_kernel -- -j 8 > hw_compile.log 2>&1 &
 ```
-
-## Compatibility with RocksDB
-
-Current version of Titan is developed and tested with TiKV's [fork][6.29.tikv] of RocksDB 6.29.
-Another version that is based off TiKV's [fork][6.4.tikv] of RocksDB 6.4 can be found in the [tikv-6.1 branch][tikv-6.1].
-
-[6.4.tikv]: https://github.com/tikv/rocksdb/tree/6.4.tikv
-[6.29.tikv]: https://github.com/tikv/rocksdb/tree/6.29.tikv
-[tikv-6.1]: https://github.com/tikv/titan/tree/tikv-6.1
