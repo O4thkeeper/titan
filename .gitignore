@@ -7,7 +7,6 @@ titandb_stress
 
 build/
 Makefile
-*.cmake
 .idea/
 .vscode/
-cmake*/
+cmake-build*/
