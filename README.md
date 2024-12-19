@@ -1,7 +1,7 @@
 # AegonKV: A High Bandwidth, Low Tail Latency, and Low Storage Cost KV-Separated LSM Store with SmartSSD-based GC Offloading
 
 ## Build
-AegonKV is built on Titan.
+AegonKV is built on Titan, and this repository is forked from [tikv/titan](https://github.com/tikv/titan.git).
 
 Follow three steps to build AegonKV: build RocksDB dependency (required by Titan), build AegonKV software side target, and build AegonKV FPGA hardware side target.
 
