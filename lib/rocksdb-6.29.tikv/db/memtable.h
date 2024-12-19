@@ -87,7 +87,7 @@ class MemTable {
  public:
   struct KeyComparator : public MemTableRep::KeyComparator {
     const InternalKeyComparator comparator;
-    explicit KeyComparator(const InternalKeyComparator& c) : comparator(c) { }
+    explicit KeyComparator(const InternalKeyComparator& c) : comparator(c) {}
     virtual int operator()(const char* prefix_len_key1,
                            const char* prefix_len_key2) const override;
     virtual int operator()(const char* prefix_len_key,
@@ -258,17 +258,19 @@ class MemTable {
            Status* s, MergeContext* merge_context,
            SequenceNumber* max_covering_tombstone_seq, SequenceNumber* seq,
            const ReadOptions& read_opts, ReadCallback* callback = nullptr,
-           bool* is_blob_index = nullptr, bool do_merge = true);
+           bool* is_blob_index = nullptr, bool do_merge = true,
+           bool* pending_check = nullptr);
 
   bool Get(const LookupKey& key, std::string* value, std::string* timestamp,
            Status* s, MergeContext* merge_context,
            SequenceNumber* max_covering_tombstone_seq,
            const ReadOptions& read_opts, ReadCallback* callback = nullptr,
-           bool* is_blob_index = nullptr, bool do_merge = true) {
+           bool* is_blob_index = nullptr, bool do_merge = true,
+           bool* pending_check = nullptr) {
     SequenceNumber seq;
     return Get(key, value, timestamp, s, merge_context,
                max_covering_tombstone_seq, &seq, read_opts, callback,
-               is_blob_index, do_merge);
+               is_blob_index, do_merge, pending_check);
   }
 
   void MultiGet(const ReadOptions& read_options, MultiGetRange* range,
@@ -445,9 +447,7 @@ class MemTable {
   // persisted.
   // REQUIRES: external synchronization to prevent simultaneous
   // operations on the same MemTable.
-  void MarkFlushed() {
-    table_->MarkFlushed();
-  }
+  void MarkFlushed() { table_->MarkFlushed(); }
 
   // return true if the current MemTableRep supports merge operator.
   bool IsMergeOperatorSupported() const {
@@ -537,8 +537,8 @@ class MemTable {
   std::atomic<size_t> write_buffer_size_;
 
   // These are used to manage memtable flushes to storage
-  bool flush_in_progress_; // started the flush
-  bool flush_completed_;   // finished the flush
+  bool flush_in_progress_;  // started the flush
+  bool flush_completed_;    // finished the flush
   uint64_t file_number_;    // filled up after flush is complete
 
   // The updates to be applied to the transaction log when this
@@ -618,7 +618,8 @@ class MemTable {
                     ReadCallback* callback, bool* is_blob_index,
                     std::string* value, std::string* timestamp, Status* s,
                     MergeContext* merge_context, SequenceNumber* seq,
-                    bool* found_final_value, bool* merge_in_progress);
+                    bool* found_final_value, bool* merge_in_progress,
+                    bool* pending_check);
 
   // Always returns non-null and assumes certain pre-checks are done
   FragmentedRangeTombstoneIterator* NewRangeTombstoneIteratorInternal(

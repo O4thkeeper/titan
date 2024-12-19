@@ -241,9 +241,8 @@ int MemTable::KeyComparator::operator()(const char* prefix_len_key1,
   return comparator.CompareKeySeq(k1, k2);
 }
 
-int MemTable::KeyComparator::operator()(const char* prefix_len_key,
-                                        const KeyComparator::DecodedType& key)
-    const {
+int MemTable::KeyComparator::operator()(
+    const char* prefix_len_key, const KeyComparator::DecodedType& key) const {
   // Internal keys are encoded as length-prefixed strings.
   Slice a = GetLengthPrefixedSlice(prefix_len_key);
   return comparator.CompareKeySeq(a, key);
@@ -692,6 +691,7 @@ struct Saver {
   bool inplace_update_support;
   bool do_merge;
   SystemClock* clock;
+  bool* pending_check_in_mem;
 
   ReadCallback* callback_;
   bool* is_blob_index;
@@ -703,6 +703,37 @@ struct Saver {
     return true;
   }
 };
+
+struct blob_index_type {
+  uint64_t file_number;
+  uint64_t offset;
+  uint64_t size;
+  uint64_t index;
+};
+static bool GetChar(Slice* src, unsigned char* value) {
+  if (src->size() < 1) return false;
+  *value = *src->data();
+  src->remove_prefix(1);
+  return true;
+}
+
+bool SaverCheckIsGCWriteBack(Slice* value) {
+  unsigned char type;
+  blob_index_type prev_new{};
+  if (!GetChar(value, &type) || type != (unsigned char)1 ||
+      !GetVarint64(value, &prev_new.file_number) ||
+      !GetVarint64(value, &prev_new.offset) ||
+      !GetVarint64(value, &prev_new.size) ||
+      !GetVarint64(value, &prev_new.index)) {
+    assert(false);
+  }
+  if (!value->empty()) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 }  // namespace
 
 static bool SaveValue(void* arg, const char* entry) {
@@ -790,7 +821,25 @@ static bool SaveValue(void* arg, const char* entry) {
           merge_context->PushOperand(
               v, s->inplace_update_support == false /* operand_pinned */);
         } else if (s->value != nullptr) {
-          s->value->assign(v.data(), v.size());
+          if (s->pending_check_in_mem == nullptr) {
+            s->value->assign(v.data(), v.size());
+          } else {
+            if (type == kTypeBlobIndex) {
+              if (!*s->pending_check_in_mem) {
+                s->value->assign(v.data(), v.size());
+                std::string temp_s{*s->value};
+                Slice temp_slice(temp_s);
+                if (SaverCheckIsGCWriteBack(&temp_slice)) {
+                  *s->pending_check_in_mem = true;
+                }
+              } else {
+                *s->pending_check_in_mem = false;
+              }
+            } else {  // kTypeValue
+              s->value->assign(v.data(), v.size());
+              *s->pending_check_in_mem = false;
+            }
+          }
         }
         if (s->inplace_update_support) {
           s->mem->GetLock(s->key->user_key())->ReadUnlock();
@@ -803,6 +852,9 @@ static bool SaveValue(void* arg, const char* entry) {
         if (ts_sz > 0 && s->timestamp != nullptr) {
           Slice ts = ExtractTimestampFromUserKey(user_key_slice, ts_sz);
           s->timestamp->assign(ts.data(), ts.size());
+        }
+        if (s->pending_check_in_mem != nullptr && *s->pending_check_in_mem) {
+          return true;
         }
         return false;
       }
@@ -873,7 +925,8 @@ bool MemTable::Get(const LookupKey& key, std::string* value,
                    MergeContext* merge_context,
                    SequenceNumber* max_covering_tombstone_seq,
                    SequenceNumber* seq, const ReadOptions& read_opts,
-                   ReadCallback* callback, bool* is_blob_index, bool do_merge) {
+                   ReadCallback* callback, bool* is_blob_index, bool do_merge,
+                   bool* pending_check) {
   // The sequence number is updated synchronously in version_set.h
   if (IsEmpty()) {
     // Avoiding recording stats for speed.
@@ -919,7 +972,7 @@ bool MemTable::Get(const LookupKey& key, std::string* value,
     }
     GetFromTable(key, *max_covering_tombstone_seq, do_merge, callback,
                  is_blob_index, value, timestamp, s, merge_context, seq,
-                 &found_final_value, &merge_in_progress);
+                 &found_final_value, &merge_in_progress, pending_check);
   }
 
   // No change to value, since we have not yet found a Put/Delete
@@ -936,7 +989,8 @@ void MemTable::GetFromTable(const LookupKey& key,
                             bool* is_blob_index, std::string* value,
                             std::string* timestamp, Status* s,
                             MergeContext* merge_context, SequenceNumber* seq,
-                            bool* found_final_value, bool* merge_in_progress) {
+                            bool* found_final_value, bool* merge_in_progress,
+                            bool* pending_check = nullptr) {
   Saver saver;
   saver.status = s;
   saver.found_final_value = found_final_value;
@@ -957,6 +1011,7 @@ void MemTable::GetFromTable(const LookupKey& key,
   saver.is_blob_index = is_blob_index;
   saver.do_merge = do_merge;
   saver.allow_data_in_errors = moptions_.allow_data_in_errors;
+  saver.pending_check_in_mem = pending_check;
   table_->Get(key, &saver, SaveValue);
   *seq = saver.seq;
 }
